@@ -5,10 +5,11 @@ const OC_API_KEY = 'e85c07c79cfc45f1b429ce62dcfbab30';
 const TRIP_UPDATES_URL = 'https://nextrip-public-api.azure-api.net/octranspo/gtfs-rt-tp/beta/v1/TripUpdates?format=json';
 
 let stopsCache = null;
-function getStopsMap() {
+async function getStopsMap() {
   if (stopsCache) return stopsCache;
   try {
-    const txt = fs.readFileSync(path.join(__dirname, 'stops.txt'), 'utf8');
+    const resp = await fetch('https://raw.githubusercontent.com/Eddiebaj/routeo-backend/main/api/stops.txt');
+    const txt = await resp.text();
     const lines = txt.split('\n');
     const map = {};
     for (let i = 1; i < lines.length; i++) {
@@ -25,7 +26,7 @@ function getStopsMap() {
     stopsCache = map;
     return map;
   } catch (e) {
-    console.error('Failed to parse stops.txt:', e.message);
+    console.error('Failed to fetch stops.txt:', e.message);
     return {};
   }
 }
