@@ -15,8 +15,8 @@ async function loadStops() {
     if (!line) continue;
     const cols = line.split(',');
     const stopId = cols[0] ? cols[0].trim() : '';
-    const lat = parseFloat(cols[4]);
-    const lng = parseFloat(cols[5]);
+    const lat = parseFloat(cols[5]);
+    const lng = parseFloat(cols[6]);
     if (stopId && !isNaN(lat) && !isNaN(lng)) {
       map[stopId] = { lat, lng };
     }
