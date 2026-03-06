@@ -8,7 +8,7 @@ let stopsCache = null;
 function getStopsMap() {
   if (stopsCache) return stopsCache;
   try {
-    const txt = fs.readFileSync(path.join(__dirname, '..', 'stops.txt'), 'utf8');
+    const txt = fs.readFileSync(path.join(__dirname, 'stops.txt'), 'utf8');
     const lines = txt.split('\n');
     const map = {};
     for (let i = 1; i < lines.length; i++) {
