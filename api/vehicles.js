@@ -55,7 +55,7 @@ module.exports = async (req, res) => {
 
   try {
     const now = Math.floor(Date.now() / 1000);
-    const stopsMap = getStopsMap();
+    onst stopsMap = await getStopsMap();
     const stopsCount = Object.keys(stopsMap).length;
 
     // 1. Fetch TripUpdates
