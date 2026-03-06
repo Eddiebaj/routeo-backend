@@ -4,7 +4,6 @@ const path = require('path');
 const OC_API_KEY = 'e85c07c79cfc45f1b429ce62dcfbab30';
 const TRIP_UPDATES_URL = 'https://nextrip-public-api.azure-api.net/octranspo/gtfs-rt-tp/beta/v1/TripUpdates?format=json';
 
-// Parse stops.txt into a map of stop_id -> { lat, lng }
 let stopsCache = null;
 function getStopsMap() {
   if (stopsCache) return stopsCache;
@@ -13,7 +12,7 @@ function getStopsMap() {
     const lines = txt.split('\n');
     const map = {};
     for (let i = 1; i < lines.length; i++) {
-      const line = lines[i].trim();
+      const line = lines[i].trim().replace(/\r/g, '');
       if (!line) continue;
       const cols = line.split(',');
       const stopId = cols[0]?.trim();
@@ -31,6 +30,15 @@ function getStopsMap() {
   }
 }
 
+function getTime(stu) {
+  // Try Arrival first, then Departure — either may be null
+  const arr = stu.Arrival;
+  const dep = stu.Departure;
+  if (arr && arr.HasTime && arr.Time) return parseInt(arr.Time);
+  if (dep && dep.HasTime && dep.Time) return parseInt(dep.Time);
+  return 0;
+}
+
 function interpolate(lat1, lon1, lat2, lon2, t) {
   return {
     lat: lat1 + (lat2 - lat1) * t,
@@ -42,39 +50,39 @@ module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cache-Control', 's-maxage=15, stale-while-revalidate=30');
 
+  const isDebug = req.query.debug === '1';
+
   try {
     const now = Math.floor(Date.now() / 1000);
     const stopsMap = getStopsMap();
+    const stopsCount = Object.keys(stopsMap).length;
 
     // 1. Fetch TripUpdates
     const tuResp = await fetch(TRIP_UPDATES_URL, {
       headers: { 'Ocp-Apim-Subscription-Key': OC_API_KEY },
     });
     const tuData = await tuResp.json();
-    const entities = tuData?.Entity || tuData?.entity || [];
+    const entities = tuData?.Entity || [];
 
-    // 2. For each trip, find current segment and interpolate position
     const seen = new Set();
     const vehicles = [];
+    let noSegment = 0, noStopCoords = 0;
 
     for (const ent of entities) {
-      const tu = ent.TripUpdate || ent.trip_update;
+      const tu = ent.TripUpdate;
       if (!tu) continue;
 
-      const trip = tu.Trip || tu.trip || {};
-      const routeId = String(trip.RouteId || trip.route_id || '?');
-      const tripId = String(trip.TripId || trip.trip_id || ent.Id || Math.random());
-      const updates = tu.StopTimeUpdate || tu.stop_time_update || [];
+      const trip = tu.Trip || {};
+      const routeId = String(trip.RouteId || '?');
+      const tripId = String(trip.TripId || ent.Id);
+      const updates = tu.StopTimeUpdate || [];
 
       let fromStop = null, toStop = null, fromTime = null, toTime = null;
 
       for (let i = 0; i < updates.length; i++) {
         const stu = updates[i];
-        const stopId = String(stu.StopId || stu.stop_id || '');
-        const arr = stu.Arrival || stu.arrival || {};
-        const dep = stu.Departure || stu.departure || {};
-        const t = parseInt(arr.Time || dep.Time || arr.time || dep.time || 0);
-
+        const stopId = String(stu.StopId || '');
+        const t = getTime(stu);
         if (!t || !stopId) continue;
 
         if (t <= now) {
@@ -87,13 +95,18 @@ module.exports = async (req, res) => {
         }
       }
 
-      if (!fromStop || !toStop) continue;
+      if (!fromStop || !toStop || !fromTime || !toTime) {
+        noSegment++;
+        continue;
+      }
 
       const from = stopsMap[fromStop];
       const to = stopsMap[toStop];
-      if (!from || !to) continue;
+      if (!from || !to) {
+        noStopCoords++;
+        continue;
+      }
 
-      // Deduplicate by route + segment
       const key = `${routeId}-${fromStop}-${toStop}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -101,7 +114,6 @@ module.exports = async (req, res) => {
       const elapsed = now - fromTime;
       const total = toTime - fromTime;
       const progress = total > 0 ? Math.min(1, Math.max(0, elapsed / total)) : 0.5;
-
       const pos = interpolate(from.lat, from.lng, to.lat, to.lng, progress);
 
       vehicles.push({
@@ -115,7 +127,20 @@ module.exports = async (req, res) => {
       });
     }
 
-    res.json({ vehicles, count: vehicles.length, source: 'gtfs-rt-interpolated' });
+    const resp = { vehicles, count: vehicles.length, source: 'gtfs-rt-interpolated' };
+    if (isDebug) {
+      resp.debug = {
+        totalEntities: entities.length,
+        stopsLoaded: stopsCount,
+        noSegment,
+        noStopCoords,
+        sampleStopIds: entities.slice(0, 3).map(e => e.TripUpdate?.StopTimeUpdate?.[0]?.StopId),
+        sampleStopsMapKeys: Object.keys(stopsMap).slice(0, 5),
+        now,
+      };
+    }
+
+    res.json(resp);
 
   } catch (err) {
     console.error('vehicles error:', err);
