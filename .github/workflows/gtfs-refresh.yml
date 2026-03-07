@@ -26,5 +26,5 @@ jobs:
         env:
           SUPABASE_URL: https://bzvkadttywgszovbowch.supabase.co
           SUPABASE_KEY: sb_publishable_UQXeqJ_OE-Zhl51qrHVF3w_UXOxKk2O
-        run: node seed-gtfs.js
+        run: node .github/workflows/seed-gtfs.js
 
