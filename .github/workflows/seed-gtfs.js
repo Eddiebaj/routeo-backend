@@ -56,6 +56,19 @@ async function main() {
   }
   console.log(`  ${tripRows.length} trips parsed`);
 
+  // Parse stops.txt
+  console.log('Parsing stops.txt...');
+  const stopLines = zip.readAsText('stops.txt').trim().split('\n');
+  const slh = stopLines[0].replace(/\r/g,'').split(',');
+  const [slId,slName,slLat,slLon] = ['stop_id','stop_name','stop_lat','stop_lon'].map(k=>slh.indexOf(k));
+  const stopRows = [];
+  for (let i = 1; i < stopLines.length; i++) {
+    const c = stopLines[i].replace(/\r/g,'').split(',');
+    if (!c[slId]) continue;
+    stopRows.push({ stop_id:c[slId], stop_name:c[slName]||'', lat:parseFloat(c[slLat])||0, lng:parseFloat(c[slLon])||0 });
+  }
+  console.log(`  ${stopRows.length} stops parsed`);
+
   // Parse stop_times.txt
   console.log('Parsing stop_times.txt...');
   const stLines = zip.readAsText('stop_times.txt').trim().split('\n');
@@ -69,6 +82,12 @@ async function main() {
     stRows.push({ stop_id:c[sStop], trip_id:c[sTrp], arrival_time:c[sTime], route_id:t.routeId||'', headsign:t.headsign||'', service_id:t.serviceId||'' });
   }
   console.log(`  ${stRows.length} stop_times parsed`);
+
+  // Clear and re-upload stops
+  console.log('Clearing stops...');
+  await supabase.from('stops').delete().neq('stop_id','');
+  console.log('Uploading stops...');
+  await batchInsert('stops', stopRows);
 
   // Clear and re-upload trips
   console.log('Clearing trips...');
