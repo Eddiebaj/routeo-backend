@@ -8,15 +8,27 @@ const supabase = createClient(
 function timeToMins(t) {
   if (!t) return 9999;
   const parts = t.split(':').map(Number);
-  return parts[0] * 60 + parts[1];
+  return parts[0] * 60 + (parts[1] || 0);
 }
 
-// Fallback cleanup for any headsigns that are still garbage
 function cleanHeadsign(headsign, routeId) {
   if (!headsign || headsign.trim() === '') return `Route ${routeId}`;
-  // Strip leading route number if duplicated e.g. "95 - Barrhaven Centre" → "Barrhaven Centre"
   const cleaned = headsign.replace(/^\d+\s*[-–]\s*/, '').trim();
   return cleaned || `Route ${routeId}`;
+}
+
+// OC Transpo service_id conventions — best-effort day-of-week matching
+function getTodayKeywords() {
+  const day = new Date().getDay(); // 0=Sun, 6=Sat
+  if (day === 0) return ['SU', 'SUN', 'SUNDAY', '7'];
+  if (day === 6) return ['SA', 'SAT', 'SATURDAY', '6'];
+  return ['WD', 'WK', 'WKD', 'WEEKDAY', '1', '2', '3', '4', '5', 'MON', 'TUE', 'WED', 'THU', 'FRI'];
+}
+
+function serviceMatchesToday(serviceId) {
+  if (!serviceId) return true;
+  const id = serviceId.toUpperCase();
+  return getTodayKeywords().some(k => id.includes(k));
 }
 
 module.exports = async (req, res) => {
@@ -28,9 +40,8 @@ module.exports = async (req, res) => {
   try {
     const now = new Date();
     const currentMins = now.getHours() * 60 + now.getMinutes();
-    const maxMins = currentMins + 120;
+    const maxMins = currentMins + 90;
 
-    // Fetch stop_times with trip_id so we can join headsign
     const { data, error } = await supabase
       .from('stop_times')
       .select('arrival_time, route_id, headsign, service_id, trip_id')
@@ -39,32 +50,26 @@ module.exports = async (req, res) => {
 
     if (error) throw new Error(error.message);
 
-    // Collect unique trip_ids that are in the upcoming window
-    const windowRows = (data || []).map(row => ({
-      ...row,
-      mins: timeToMins(row.arrival_time),
-    })).filter(row => row.mins >= currentMins && row.mins <= maxMins);
+    const allRows = (data || []).map(row => ({ ...row, mins: timeToMins(row.arrival_time) }));
+    const inWindow = allRows.filter(row => row.mins >= currentMins && row.mins <= maxMins);
 
-    const tripIds = [...new Set(windowRows.map(r => r.trip_id).filter(Boolean))];
+    // Try with service_id filter first, fall back to unfiltered if empty
+    let finalRows = inWindow.filter(row => serviceMatchesToday(row.service_id));
+    if (finalRows.length === 0) finalRows = inWindow;
 
-    // Fetch accurate headsigns from trips table
+    // Headsign lookup from trips table
+    const tripIds = [...new Set(finalRows.map(r => r.trip_id).filter(Boolean))];
     let tripsMap = {};
     if (tripIds.length > 0) {
-      const { data: tripData, error: tripError } = await supabase
+      const { data: tripData } = await supabase
         .from('trips')
         .select('trip_id, headsign, route_id')
         .in('trip_id', tripIds);
-
-      if (!tripError && tripData) {
-        for (const t of tripData) {
-          tripsMap[t.trip_id] = t;
-        }
-      }
+      if (tripData) for (const t of tripData) tripsMap[t.trip_id] = t;
     }
 
-    // Deduplicate and build response
     const seen = new Set();
-    const upcoming = windowRows
+    const upcoming = finalRows
       .filter(row => {
         const key = `${row.route_id}-${row.arrival_time}`;
         if (seen.has(key)) return false;
@@ -74,13 +79,11 @@ module.exports = async (req, res) => {
       .slice(0, 8)
       .map(row => {
         const trip = tripsMap[row.trip_id] || {};
-        // Prefer trips table headsign, fall back to stop_times headsign
-        const rawHeadsign = trip.headsign || row.headsign || '';
         return {
           stopId: stop,
           routeId: row.route_id,
           tripId: row.trip_id,
-          headsign: cleanHeadsign(rawHeadsign, row.route_id),
+          headsign: cleanHeadsign(trip.headsign || row.headsign || '', row.route_id),
           scheduledTime: row.arrival_time,
           minsAway: row.mins - currentMins,
         };
