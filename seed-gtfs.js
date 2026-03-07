@@ -1,22 +1,16 @@
-/**
- * RouteO — Local GTFS Seed Script
- * Run with: node seed-gtfs.js
- * Uploads stop_times and trips directly to Supabase from your machine.
- */
-
 const { createClient } = require('@supabase/supabase-js');
 const AdmZip = require('adm-zip');
 const https = require('https');
 
 const supabase = createClient(
-  'https://bzvkadttywgszovbowch.supabase.co',
-  'sb_publishable_UQXeqJ_OE-Zhl51qrHVF3w_UXOxKk2O'
+  process.env.SUPABASE_URL || 'https://bzvkadttywgszovbowch.supabase.co',
+  process.env.SUPABASE_KEY || 'sb_publishable_UQXeqJ_OE-Zhl51qrHVF3w_UXOxKk2O'
 );
 
 const GTFS_URL = 'https://oct-gtfs-emasagcnfmcgeham.z01.azurefd.net/public-access/GTFSExport.zip';
-const BATCH_SIZE = 1000;
+const BATCH = 1000;
 
-function downloadBuffer(url) {
+function download(url) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     https.get(url, res => {
@@ -25,100 +19,70 @@ function downloadBuffer(url) {
       res.on('data', chunk => {
         chunks.push(chunk);
         received += chunk.length;
-        if (total) process.stdout.write(`\rDownloading... ${Math.round(received / total * 100)}%`);
+        if (total) process.stdout.write(`\rDownloading... ${Math.round(received/total*100)}%`);
       });
-      res.on('end', () => { console.log('\nDownload complete.'); resolve(Buffer.concat(chunks)); });
+      res.on('end', () => { console.log('\nDone.'); resolve(Buffer.concat(chunks)); });
       res.on('error', reject);
     }).on('error', reject);
   });
 }
 
 async function batchInsert(table, rows) {
-  let uploaded = 0;
-  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
-    const batch = rows.slice(i, i + BATCH_SIZE);
-    const { error } = await supabase.from(table).insert(batch);
-    if (error) throw new Error(`Insert failed at row ${i} in ${table}: ${error.message}`);
-    uploaded += batch.length;
-    process.stdout.write(`\r  Uploading ${table}... ${uploaded} / ${rows.length}`);
+  for (let i = 0; i < rows.length; i += BATCH) {
+    const { error } = await supabase.from(table).insert(rows.slice(i, i + BATCH));
+    if (error) throw new Error(`${table} insert failed at ${i}: ${error.message}`);
+    process.stdout.write(`\r  ${table}: ${Math.min(i+BATCH, rows.length)}/${rows.length}`);
   }
-  console.log(`\n  Done — ${uploaded} rows inserted into ${table}.`);
+  console.log();
 }
 
 async function main() {
   console.log('=== RouteO GTFS Seed ===\n');
 
-  // 1. Download
-  console.log('Downloading GTFS zip...');
-  const buffer = await downloadBuffer(GTFS_URL);
-  const zip = new AdmZip(buffer);
+  console.log('Downloading GTFS...');
+  const zip = new AdmZip(await download(GTFS_URL));
 
-  // 2. Parse trips.txt
+  // Parse trips.txt
   console.log('Parsing trips.txt...');
-  const tripsRaw = zip.readAsText('trips.txt');
-  const tripLines = tripsRaw.trim().split('\n');
-  const tripHeaders = tripLines[0].replace(/\r/g, '').split(',');
-  const tripIdIdx    = tripHeaders.indexOf('trip_id');
-  const routeIdIdx   = tripHeaders.indexOf('route_id');
-  const headsignIdx  = tripHeaders.indexOf('trip_headsign');
-  const serviceIdIdx = tripHeaders.indexOf('service_id');
-
-  const tripsMap = {};
-  const tripRows = [];
-
+  const tripLines = zip.readAsText('trips.txt').trim().split('\n');
+  const th = tripLines[0].replace(/\r/g,'').split(',');
+  const [tId,tRoute,tHead,tSvc] = ['trip_id','route_id','trip_headsign','service_id'].map(k=>th.indexOf(k));
+  const tripsMap = {}, tripRows = [];
   for (let i = 1; i < tripLines.length; i++) {
-    const cols      = tripLines[i].replace(/\r/g, '').split(',');
-    const tripId    = cols[tripIdIdx]    || '';
-    const routeId   = cols[routeIdIdx]   || '';
-    const headsign  = cols[headsignIdx]  || '';
-    const serviceId = cols[serviceIdIdx] || '';
-    if (!tripId) continue;
-    tripsMap[tripId] = { routeId, headsign, serviceId };
-    tripRows.push({ trip_id: tripId, route_id: routeId, headsign, service_id: serviceId });
+    const c = tripLines[i].replace(/\r/g,'').split(',');
+    if (!c[tId]) continue;
+    tripsMap[c[tId]] = { routeId: c[tRoute]||'', headsign: c[tHead]||'', serviceId: c[tSvc]||'' };
+    tripRows.push({ trip_id:c[tId], route_id:c[tRoute]||'', headsign:c[tHead]||'', service_id:c[tSvc]||'' });
   }
-  console.log(`  Parsed ${tripRows.length} trips.`);
+  console.log(`  ${tripRows.length} trips parsed`);
 
-  // 3. Parse stop_times.txt
+  // Parse stop_times.txt
   console.log('Parsing stop_times.txt...');
-  const stRaw     = zip.readAsText('stop_times.txt');
-  const stLines   = stRaw.trim().split('\n');
-  const stHeaders = stLines[0].replace(/\r/g, '').split(',');
-  const stTripIdx = stHeaders.indexOf('trip_id');
-  const stStopIdx = stHeaders.indexOf('stop_id');
-  const stTimeIdx = stHeaders.indexOf('arrival_time');
-
-  const stopTimeRows = [];
+  const stLines = zip.readAsText('stop_times.txt').trim().split('\n');
+  const sh = stLines[0].replace(/\r/g,'').split(',');
+  const [sTrp,sStop,sTime] = ['trip_id','stop_id','arrival_time'].map(k=>sh.indexOf(k));
+  const stRows = [];
   for (let i = 1; i < stLines.length; i++) {
-    const cols   = stLines[i].replace(/\r/g, '').split(',');
-    const tripId = cols[stTripIdx] || '';
-    const stopId = cols[stStopIdx] || '';
-    const time   = cols[stTimeIdx] || '';
-    if (!tripId || !stopId || !time) continue;
-
-    const trip = tripsMap[tripId] || {};
-    stopTimeRows.push({
-      stop_id:      stopId,
-      trip_id:      tripId,
-      arrival_time: time,
-      route_id:     trip.routeId   || '',
-      headsign:     trip.headsign  || '',
-      service_id:   trip.serviceId || '',
-    });
+    const c = stLines[i].replace(/\r/g,'').split(',');
+    if (!c[sTrp]||!c[sStop]||!c[sTime]) continue;
+    const t = tripsMap[c[sTrp]]||{};
+    stRows.push({ stop_id:c[sStop], trip_id:c[sTrp], arrival_time:c[sTime], route_id:t.routeId||'', headsign:t.headsign||'', service_id:t.serviceId||'' });
   }
-  console.log(`  Parsed ${stopTimeRows.length} stop_times.`);
+  console.log(`  ${stRows.length} stop_times parsed`);
 
-  // 4. Upload trips
+  // Clear and re-upload trips
+  console.log('Clearing trips...');
+  await supabase.from('trips').delete().neq('trip_id','');
   console.log('Uploading trips...');
   await batchInsert('trips', tripRows);
 
-  // 5. Upload stop_times
+  // Clear and re-upload stop_times
+  console.log('Clearing stop_times...');
+  await supabase.from('stop_times').delete().neq('id', 0);
   console.log('Uploading stop_times...');
-  await batchInsert('stop_times', stopTimeRows);
+  await batchInsert('stop_times', stRows);
 
-  console.log('\n=== Seed complete! ===');
+  console.log('\n=== Done! ===');
 }
 
-main().catch(err => {
-  console.error('\nFatal error:', err.message);
-  process.exit(1);
-});
+main().catch(e => { console.error('\nFatal:', e.message); process.exit(1); });
