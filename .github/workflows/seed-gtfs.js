@@ -65,7 +65,7 @@ async function main() {
   for (let i = 1; i < stopLines.length; i++) {
     const c = stopLines[i].replace(/\r/g,'').split(',');
     if (!c[slId]) continue;
-    stopRows.push({ stop_id:c[slId], stop_name:c[slName]||'', lat:parseFloat(c[slLat])||0, lng:parseFloat(c[slLon])||0 });
+    stopRows.push({ stop_id:c[slId], stop_name:c[slName]||'', stop_lat:parseFloat(c[slLat])||0, stop_lon:parseFloat(c[slLon])||0 });
   }
   console.log(`  ${stopRows.length} stops parsed`);
 
