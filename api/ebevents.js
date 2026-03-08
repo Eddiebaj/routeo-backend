@@ -58,8 +58,8 @@ module.exports = async function handler(req, res) {
   };
 
   try {
-    // Fetch pages 1-5 in parallel
-    const pages = await Promise.all([1, 2, 3, 4, 5].map(fetchPage));
+    // Fetch pages 1-10 in parallel
+    const pages = await Promise.all([1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(fetchPage));
     let events = pages.flat();
 
     // Filter: must have Ottawa keyword in name/venue/address OR be a .ca domain
