@@ -1,6 +1,6 @@
 // api/511events.js  — Vercel serverless route
 // Proxies 511 Ontario events API, filters to Ottawa area
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   try {
     const resp = await fetch('https://511on.ca/api/v2/Events?format=json&lang=en', {
