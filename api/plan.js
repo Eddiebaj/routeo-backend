@@ -95,19 +95,36 @@ async function enrichWalkSteps(from, to, otpSteps) {
   const gSteps = data?.routes?.[0]?.legs?.[0]?.steps;
   if (!gSteps?.length) return otpSteps;
 
-  const gNames = gSteps.map(s => ({ name: extractStreetName(s.html_instructions), distance: s.distance?.value || 0 }));
+  // Build Google steps with both full instruction and street name
+  const gStepData = gSteps.map(s => ({
+    instruction: cleanInstruction(s.html_instructions),
+    streetName: extractStreetName(s.html_instructions),
+    distance: s.distance?.value || 0,
+  }));
 
   let gIdx = 0, gCum = 0, otpCum = 0;
   return otpSteps.map((step) => {
     otpCum += step.distance;
-    while (gIdx < gNames.length - 1 && gCum + gNames[gIdx].distance / 2 < otpCum) {
-      gCum += gNames[gIdx].distance;
+    while (gIdx < gStepData.length - 1 && gCum + gStepData[gIdx].distance / 2 < otpCum) {
+      gCum += gStepData[gIdx].distance;
       gIdx++;
     }
-    const gName = gNames[gIdx]?.name;
+    const g = gStepData[gIdx];
     const isGeneric = !step.streetName || GENERIC_NAMES.has(step.streetName?.toLowerCase());
-    return { ...step, streetName: (isGeneric && gName) ? gName : step.streetName };
+    return {
+      ...step,
+      // Use Google street name if OTP has a generic one
+      streetName: (isGeneric && g?.streetName) ? g.streetName : step.streetName,
+      // Always store the full Google instruction for unnamed segments
+      instruction: (isGeneric && g?.instruction) ? g.instruction : null,
+    };
   });
+}
+
+// Returns plain text instruction (e.g. "Turn left toward Queen Street")
+function cleanInstruction(html) {
+  if (!html) return null;
+  return html.replace(/<b>/g, '').replace(/<\/b>/g, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 function extractStreetName(html) {
@@ -124,7 +141,7 @@ function extractStreetName(html) {
     const m = text.match(re);
     if (m?.[1] && m[1].length < 60) return m[1].trim();
   }
-  return text.length < 60 ? text : null;
+  return null;
 }
 
 function formatDate(d) {
