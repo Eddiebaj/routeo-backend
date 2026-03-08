@@ -1,6 +1,6 @@
 // api/parks.js  — Vercel serverless route
 // Tries multiple Ottawa Open Data dataset slugs for skating rinks
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   const BASE = 'https://open.ottawa.ca/api/explore/v2.1/catalog/datasets';
   const slugs = [
