@@ -1,7 +1,7 @@
 // api/plan.js — OTP trip planning proxy for RouteO
 // Proxies requests to the Railway-hosted OpenTripPlanner instance
 
-const OTP_BASE = process.env.OTP_URL || 'https://routeo-otp.up.railway.app';
+const OTP_BASE = process.env.OTP_URL || 'https://opentripplanner-production.up.railway.app';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -70,6 +70,7 @@ export default async function handler(req, res) {
           relativeDirection: step.relativeDirection,
           streetName: step.streetName,
         })),
+        legGeometry: leg.legGeometry ? { points: leg.legGeometry.points } : null,
       })),
     }));
 
