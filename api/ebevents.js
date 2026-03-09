@@ -98,9 +98,12 @@ module.exports = async function handler(req, res) {
     // Geocode today's events only (server-side, sequential to be safe)
     const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Toronto' });
     for (const e of events) {
-      if (e.date === today && e.address) {
-        const coords = await geocode(e.address);
-        if (coords) { e.lat = coords.lat; e.lng = coords.lng; }
+      if (e.date === today) {
+        const query = e.address || e.venue || '';
+        if (query) {
+          const coords = await geocode(query);
+          if (coords) { e.lat = coords.lat; e.lng = coords.lng; }
+        }
       }
     }
 
