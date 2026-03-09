@@ -12,6 +12,7 @@ const CATEGORIES = [
 ];
 
 const OTTAWA_KEYWORDS = ['ottawa', 'gatineau', 'kanata', 'nepean', 'barrhaven', 'gloucester', 'orleans', 'vanier', 'manotick', 'osgoode'];
+const PLACES_API_KEY = 'AIzaSyCKwAVVCbxHKsKViJ4Dq0ZQ5r6k-arue3E';
 
 const parsePage = (html, category) => {
   const events = [];
@@ -54,17 +55,23 @@ const fetchCategoryPage = async (category) => {
   try {
     const resp = await fetch(
       `https://www.eventbrite.ca/d/canada--ottawa/${category.slug}--events/`,
-      {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml',
-          'Accept-Language': 'en-CA,en;q=0.9',
-        },
-      }
+      { headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36', 'Accept': 'text/html', 'Accept-Language': 'en-CA,en;q=0.9' } }
     );
     if (!resp.ok) return [];
     return parsePage(await resp.text(), category);
   } catch { return []; }
+};
+
+// Geocode a single address via Google — done server-side so mobile client does zero geocoding
+const geocode = async (address) => {
+  try {
+    const r = await fetch(
+      `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address + ', Ottawa, ON')}&key=${PLACES_API_KEY}`
+    );
+    const d = await r.json();
+    const loc = d.results?.[0]?.geometry?.location;
+    return loc ? { lat: loc.lat, lng: loc.lng } : null;
+  } catch { return null; }
 };
 
 module.exports = async function handler(req, res) {
@@ -76,24 +83,28 @@ module.exports = async function handler(req, res) {
 
     // Filter to Ottawa only
     events = events.filter(e => {
-      const searchText = (e.address + ' ' + e.venue + ' ' + e.name).toLowerCase();
-      const hasOttawaSignal = OTTAWA_KEYWORDS.some(k => searchText.includes(k));
-      const isCaDomain = e.url.includes('eventbrite.ca/');
-      return hasOttawaSignal || isCaDomain;
+      const text = (e.address + ' ' + e.venue + ' ' + e.name).toLowerCase();
+      return OTTAWA_KEYWORDS.some(k => text.includes(k)) || e.url.includes('eventbrite.ca/');
     });
 
-    // Deduplicate by id, keeping first occurrence (which has the correct category)
+    // Deduplicate
     const seen = new Set();
-    events = events.filter(e => {
-      if (seen.has(e.id)) return false;
-      seen.add(e.id);
-      return true;
-    });
+    events = events.filter(e => { if (seen.has(e.id)) return false; seen.add(e.id); return true; });
 
     // Sort by date
     events.sort((a, b) => (a.date || '9999') < (b.date || '9999') ? -1 : 1);
+    events = events.slice(0, 80);
 
-    res.json({ events: events.slice(0, 100), count: events.length, categories: CATEGORIES.map(c => c.label) });
+    // Geocode today's events only (server-side, sequential to be safe)
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Toronto' });
+    for (const e of events) {
+      if (e.date === today && e.address) {
+        const coords = await geocode(e.address);
+        if (coords) { e.lat = coords.lat; e.lng = coords.lng; }
+      }
+    }
+
+    res.json({ events, count: events.length, categories: CATEGORIES.map(c => c.label) });
   } catch (err) {
     res.status(500).json({ events: [], error: String(err) });
   }
