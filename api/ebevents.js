@@ -95,10 +95,16 @@ module.exports = async function handler(req, res) {
     events.sort((a, b) => (a.date || '9999') < (b.date || '9999') ? -1 : 1);
     events = events.slice(0, 80);
 
-    // Geocode today's events only (server-side, sequential to be safe)
-    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Toronto' });
+    // Geocode upcoming events (today + next 2 days) server-side
+    const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Toronto' }));
+    const upcomingDates = new Set();
+    for (let i = 0; i < 3; i++) {
+      const d = new Date(now);
+      d.setDate(d.getDate() + i);
+      upcomingDates.add(d.toLocaleDateString('en-CA', { timeZone: 'America/Toronto' }));
+    }
     for (const e of events) {
-      if (e.date === today) {
+      if (upcomingDates.has(e.date)) {
         const query = e.address || e.venue || '';
         if (query) {
           const coords = await geocode(query);
