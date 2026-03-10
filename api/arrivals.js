@@ -1,4 +1,5 @@
 const { createClient } = require('@supabase/supabase-js');
+const GtfsRealtimeBindings = require('gtfs-realtime-bindings');
 
 const supabase = createClient(
   'https://bzvkadttywgszovbowch.supabase.co',
@@ -6,7 +7,32 @@ const supabase = createClient(
 );
 
 const OC_KEY = process.env.OC_TRANSPO_API_KEY || 'b08f2056bef846cf8a0d1487c59b6d74';
+const STO_KEY = process.env.STO_API_KEY || '047BF16E296E977027D2D8374F8CEEC1';
+
 const GTFS_RT_URL = 'https://nextrip-public-api.azure-api.net/octranspo/gtfs-rt-tu/beta/v1/TripUpdates?format=json';
+const STO_GTFS_RT_URL = 'https://www.sto.ca/sites/default/files/opendata/gtfs_rt/TripUpdates.pb';
+
+// ── STO stop detection ─────────────────────────────────────────
+// STO stop IDs are purely numeric and typically 5 digits starting with 1-5
+function isSTOStop(stopId) {
+  const id = String(stopId);
+  // OC Transpo stops are numeric (4-5 digits) or alphanumeric (e.g. EE995, NA998)
+  // STO stops are numeric 5-digit IDs in range 10000-59999
+  if (!/^\d+$/.test(id)) return false; // alphanumeric = OC Transpo LRT platform
+  const num = parseInt(id);
+  return num >= 10000 && num <= 59999 && !isOCTranspoNumericStop(id);
+}
+
+// OC Transpo numeric stops are generally under 15000 or specific known ranges
+// We identify STO by checking if the stop is NOT in OC Transpo's known ranges
+function isOCTranspoNumericStop(stopId) {
+  const num = parseInt(stopId);
+  // OC Transpo bus stops are typically 1000-14999
+  // STO stops are typically 15000-59999
+  // This is a best-effort heuristic — static GTFS seeding is the proper fix
+  if (num >= 1000 && num <= 14999) return true;
+  return false;
+}
 
 // Multi-platform transit hub stops (e.g. Rideau Centre has platforms 9942-9948)
 const MULTI_PLATFORM_STOPS = {
@@ -109,7 +135,7 @@ function serviceMatchesToday(serviceId) {
   return serviceId.toLowerCase().includes(getTodayServiceKeyword());
 }
 
-// ── Fetch GTFS-RT live predictions ────────────────────────────
+// ── Fetch OC Transpo GTFS-RT live predictions ──────────────────
 async function fetchRealtime(stopId) {
   const stopIds = MULTI_PLATFORM_STOPS[stopId] || [stopId];
   const stopSet = new Set(stopIds.map(String));
@@ -133,13 +159,13 @@ async function fetchRealtime(stopId) {
       const t = parseInt(arr.Time || 0);
       if (!t) continue;
       const secsAway = t - now;
-      if (secsAway < -60 || secsAway > 5400) continue; // -1min to +90min
+      if (secsAway < -60 || secsAway > 5400) continue;
       const trip = tu.Trip || {};
       results.push({
         stopId,
         routeId: trip.RouteId || '?',
         tripId: String(trip.TripId || ''),
-        headsign: '', // filled below
+        headsign: '',
         minsAway: Math.max(0, Math.round(secsAway / 60)),
         arrivalTime: t,
         departureTime: parseInt((stu.Departure || {}).Time || 0) || t,
@@ -159,7 +185,6 @@ async function fetchRealtime(stopId) {
     if (unique.length >= 5) break;
   }
 
-  // Resolve headsigns from trips table
   if (unique.length > 0) {
     const tripIds = [...new Set(unique.map(r => r.tripId).filter(Boolean))];
     if (tripIds.length > 0) {
@@ -179,6 +204,61 @@ async function fetchRealtime(stopId) {
         for (const r of unique) r.headsign = `Route ${r.routeId}`;
       }
     }
+  }
+
+  return unique;
+}
+
+// ── Fetch STO GTFS-RT live predictions ────────────────────────
+async function fetchSTORealtime(stopId) {
+  const resp = await fetch(STO_GTFS_RT_URL, {
+    headers: { 'apikey': STO_KEY },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!resp.ok) throw new Error(`STO GTFS-RT ${resp.status}`);
+
+  const buffer = await resp.arrayBuffer();
+  const feed = GtfsRealtimeBindings.transit_realtime.FeedMessage.decode(
+    new Uint8Array(buffer)
+  );
+
+  const now = Math.floor(Date.now() / 1000);
+  const results = [];
+
+  for (const entity of (feed.entity || [])) {
+    const tu = entity.tripUpdate;
+    if (!tu) continue;
+    for (const stu of (tu.stopTimeUpdate || [])) {
+      if (String(stu.stopId) !== String(stopId)) continue;
+      const arr = stu.arrival || stu.departure || {};
+      const t = arr.time ? Number(arr.time) : 0;
+      if (!t) continue;
+      const secsAway = t - now;
+      if (secsAway < -60 || secsAway > 5400) continue;
+      const trip = tu.trip || {};
+      results.push({
+        stopId,
+        routeId: trip.routeId || '?',
+        tripId: String(trip.tripId || ''),
+        headsign: `Route ${trip.routeId || '?'}`,
+        minsAway: Math.max(0, Math.round(secsAway / 60)),
+        arrivalTime: t,
+        departureTime: t,
+        scheduleRelationship: 'SCHEDULED',
+        agency: 'STO',
+      });
+    }
+  }
+
+  results.sort((a, b) => a.minsAway - b.minsAway);
+  const unique = [];
+  const seen = new Set();
+  for (const r of results) {
+    const key = `${r.routeId}-${r.tripId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(r);
+    if (unique.length >= 5) break;
   }
 
   return unique;
@@ -242,8 +322,29 @@ module.exports = async (req, res) => {
   const stopId = req.query.stop || req.query.stopId;
   if (!stopId) return res.status(400).json({ error: 'stop param required' });
 
+  const isSTO = isSTOStop(stopId);
+
+  // ── STO stop flow ──────────────────────────────────────────
+  if (isSTO) {
+    try {
+      const stoArrivals = await fetchSTORealtime(stopId);
+      if (stoArrivals.length > 0) {
+        return res.json({ stop: stopId, arrivals: stoArrivals, source: 'sto-gtfs-rt', agency: 'STO' });
+      }
+    } catch (err) {
+      console.error('STO GTFS-RT failed:', err.message);
+    }
+    // STO static fallback
+    try {
+      const staticArrivals = await fetchStatic(stopId);
+      return res.json({ stop: stopId, arrivals: staticArrivals, source: 'gtfs-static', agency: 'STO' });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
+  // ── OC Transpo stop flow ───────────────────────────────────
   try {
-    // Try GTFS-RT first
     const rtArrivals = await fetchRealtime(stopId);
     if (rtArrivals.length > 0) {
       return res.json({ stop: stopId, arrivals: rtArrivals, source: 'gtfs-rt' });
@@ -253,7 +354,6 @@ module.exports = async (req, res) => {
   }
 
   try {
-    // Fall back to static GTFS
     const staticArrivals = await fetchStatic(stopId);
     return res.json({ stop: stopId, arrivals: staticArrivals, source: 'gtfs-static' });
   } catch (err) {
