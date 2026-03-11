@@ -1,7 +1,5 @@
 // api/plan.js — OTP trip planning proxy for RouteO
-// Enriches WALK leg steps with Google Directions street names
-
-const OTP_BASE = process.env.OTP_URL || 'https://routeo-otp-production.up.railway.app';
+const OTP_BASE = 'https://routeo-otp-production.up.railway.app';
 const GOOGLE_KEY = process.env.GOOGLE_API_KEY;
 
 const GENERIC_NAMES = new Set(['path', 'sidewalk', 'footway', 'steps', 'pedestrian', 'service', 'track', 'cycleway', 'residential']);
@@ -43,7 +41,6 @@ export default async function handler(req, res) {
           streetName: step.streetName,
         }));
 
-        // Only enrich the best itinerary's walk legs to avoid excess API calls
         if (itinIdx === 0 && leg.mode === 'WALK' && steps.length > 0) {
           const hasGeneric = steps.some(s => !s.streetName || GENERIC_NAMES.has(s.streetName?.toLowerCase()));
           if (hasGeneric) {
@@ -66,6 +63,8 @@ export default async function handler(req, res) {
           routeShortName: leg.routeShortName || null,
           routeLongName: leg.routeLongName || null,
           headsign: leg.headsign || null,
+          agencyName: leg.agencyName || null,
+          agencyId: leg.agencyId || null,
           intermediateStops: (leg.intermediateStops || []).map(s => s.name),
           steps,
           legGeometry: leg.legGeometry ? { points: leg.legGeometry.points } : null,
@@ -95,7 +94,6 @@ async function enrichWalkSteps(from, to, otpSteps) {
   const gSteps = data?.routes?.[0]?.legs?.[0]?.steps;
   if (!gSteps?.length) return otpSteps;
 
-  // Build Google steps with both full instruction and street name
   const gStepData = gSteps.map(s => ({
     instruction: cleanInstruction(s.html_instructions),
     streetName: extractStreetName(s.html_instructions),
@@ -113,15 +111,12 @@ async function enrichWalkSteps(from, to, otpSteps) {
     const isGeneric = !step.streetName || GENERIC_NAMES.has(step.streetName?.toLowerCase());
     return {
       ...step,
-      // Use Google street name if OTP has a generic one
       streetName: (isGeneric && g?.streetName) ? g.streetName : step.streetName,
-      // Always store the full Google instruction for unnamed segments
       instruction: (isGeneric && g?.instruction) ? g.instruction : null,
     };
   });
 }
 
-// Returns plain text instruction (e.g. "Turn left toward Queen Street")
 function cleanInstruction(html) {
   if (!html) return null;
   return html.replace(/<b>/g, '').replace(/<\/b>/g, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
@@ -147,6 +142,7 @@ function extractStreetName(html) {
 function formatDate(d) {
   return `${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}-${d.getFullYear()}`;
 }
+
 function formatTime(d) {
   return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
 }
