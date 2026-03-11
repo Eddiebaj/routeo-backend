@@ -1,14 +1,18 @@
+import { parse } from 'url';
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const { fromPlace, toPlace, mode, date, time, numItineraries } = req.query;
+  const { query } = parse(req.url, true);
+  const { fromPlace, toPlace, mode, date, time, numItineraries } = query;
 
   if (!fromPlace || !toPlace) {
     return res.status(400).json({ 
       error: 'Missing required parameters',
-      received: req.query 
+      received: query,
+      url: req.url
     });
   }
 
