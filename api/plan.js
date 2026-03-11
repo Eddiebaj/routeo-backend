@@ -1,7 +1,7 @@
 // api/plan.js — OTP trip planning proxy for RouteO
 // Enriches WALK leg steps with Google Directions street names
 
-const OTP_BASE = process.env.OTP_URL || 'https://opentripplanner-production.up.railway.app';
+const OTP_BASE = process.env.OTP_URL || 'https://routeo-otp-production.up.railway.app';
 const GOOGLE_KEY = process.env.GOOGLE_API_KEY;
 
 const GENERIC_NAMES = new Set(['path', 'sidewalk', 'footway', 'steps', 'pedestrian', 'service', 'track', 'cycleway', 'residential']);
