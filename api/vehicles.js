@@ -8,8 +8,8 @@ const STOPS_URL = 'https://raw.githubusercontent.com/Eddiebaj/routeo-backend/mai
 
 // ── STO config ───────────────────────────────────────────────
 const STO_HOST = 'https://gtfs.sto.ca/download.php';
-const STO_PUBLIC_KEY = process.env.STO_PUBLIC_KEY || '';
-const STO_PRIVATE_KEY = process.env.STO_PRIVATE_KEY || '';
+const STO_PUBLIC_KEY = process.env.STO_PUBLIC_KEY || '047BF16E296E977027D2D8374F8CEEC1';
+const STO_PRIVATE_KEY = process.env.STO_PRIVATE_KEY || '97F4D3FA7E2360C7201AB882CC7B841E45155C0C8608E2E7390A305DF6E5A94A';
 
 let stopsCache = null;
 
