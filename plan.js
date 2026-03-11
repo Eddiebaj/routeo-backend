@@ -5,6 +5,13 @@ export default async function handler(req, res) {
 
   const { fromPlace, toPlace, mode, date, time, numItineraries } = req.query;
 
+  if (!fromPlace || !toPlace) {
+    return res.status(400).json({ 
+      error: 'Missing required parameters',
+      received: req.query 
+    });
+  }
+
   const OTP_URL = 'https://routeo-otp-production.up.railway.app';
 
   const params = new URLSearchParams({
