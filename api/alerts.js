@@ -149,7 +149,7 @@ function parseIncidents(html) {
     const affectedStations = [];
     const dangerMatches = card.match(/alert-danger[^>]*>([A-Z]{2,3})</g) || [];
     for (const dm of dangerMatches) {
-      const code = dm.match(/>([A-Z]{2,3})$/);
+      const code = dm.match(/>([A-Z]{2,3})/);
       if (code) affectedStations.push(code[1]);
     }
 
