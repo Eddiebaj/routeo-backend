@@ -122,7 +122,7 @@ function parseStations(html, stations, prefix) {
     const id = prefix + s.key;
     const esc = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     // Match the button that targets this station's accordion
-    const re = new RegExp('class="accordion-button\\s+([^"]*)"[^>]*#stationDetails' + esc, 'i');
+    const re = new RegExp('class="accordion-button\\s+([^"]*)"[^>]*?#stationDetails' + esc, 'i');
     const m = html.match(re);
     const classes = m ? m[1].toLowerCase() : '';
     const bad = classes.includes('bg-danger');
