@@ -74,7 +74,8 @@ async function fetchStoVehicles() {
       if (!vp || !vp.position) continue;
 
       const trip = vp.trip || {};
-      const routeId = String(trip.routeId || '?');
+      const routeId = trip.routeId ? String(trip.routeId) : '';
+      if (!routeId) continue; // skip vehicles with no route ID
       const tripId = String(trip.tripId || entity.id || '');
       const lat = vp.position.latitude;
       const lng = vp.position.longitude;
@@ -118,7 +119,8 @@ async function fetchOcVehicles(stopsMap, now, isDebug) {
     if (!tu) continue;
 
     const trip = tu.Trip || {};
-    const routeId = String(trip.RouteId || '?');
+    const routeId = trip.RouteId ? String(trip.RouteId) : '';
+    if (!routeId) continue; // skip trips with no route ID
     const tripId = String(trip.TripId || ent.Id || Math.random());
     const updates = tu.StopTimeUpdate || [];
 
