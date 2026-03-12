@@ -115,14 +115,17 @@ let lrtCache = null;
 let lrtCacheTime = 0;
 const LRT_CACHE_TTL = 5 * 60 * 1000;
 
-function parseStations(html, stations) {
+function parseStations(html, stations, prefix) {
+  // Station buttons use Bootstrap: bg-success = ok, bg-danger = disrupted
+  // IDs: stationDetails{Key} (Line 1), stationDetails2{Key} (Line 2), stationDetails4{Key} (Line 4)
   return stations.map(s => {
-    const esc = s.key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const re = new RegExp(esc + '[\\s\\S]{0,400}', 'i');
+    const id = prefix + s.key;
+    const esc = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Match the button that targets this station's accordion
+    const re = new RegExp('class="accordion-button\\s+([^"]*)"[^>]*#stationDetails' + esc, 'i');
     const m = html.match(re);
-    const ctx = m ? m[0].toLowerCase() : '';
-    const bad = ctx.includes('red') || ctx.includes('bad') || ctx.includes('disrupted') ||
-                ctx.includes('not running') || ctx.includes('closed');
+    const classes = m ? m[1].toLowerCase() : '';
+    const bad = classes.includes('bg-danger');
     return { code: s.code, name: s.name, ok: !bad };
   });
 }
@@ -130,37 +133,36 @@ function parseStations(html, stations) {
 function parseIncidents(html) {
   const incidents = [];
   const seen = new Set();
-  // Look for time markers like "23h" or "213h ago" followed by descriptive text
-  const blocks = html.split(/(?=\d{1,4}(?:\.\d)?h\s)/gi);
-  for (const block of blocks) {
-    const timeMatch = block.match(/^(\d{1,4}(?:\.\d)?)h\s/i);
+
+  // Split by card-header boundaries (each incident is a Bootstrap card)
+  const cards = html.split(/card-header[^>]*id="heading/gi);
+  for (let i = 1; i < cards.length; i++) {
+    const card = cards[i];
+
+    // Extract hours from btn-social span: <span class="btn-social mt-1">23h</span>
+    const timeMatch = card.match(/btn-social[^>]*>(\d{1,4}(?:\.\d)?)h<\//i);
     if (!timeMatch) continue;
     const hoursAgo = parseFloat(timeMatch[1]);
     if (hoursAgo > 720) continue; // skip >30 days
 
-    // Extract line codes like L1TPBAYPIMLYNPAR
-    const lineCodes = block.match(/L[124][A-Z]{2,}/g) || [];
+    // Extract affected stations — those with alert-danger class
     const affectedStations = [];
-    for (const lc of lineCodes) {
-      const codes = lc.substring(2);
-      for (let i = 0; i < codes.length; i += 3) {
-        const c = codes.substring(i, Math.min(i + 3, codes.length));
-        if (c.length >= 2) affectedStations.push(c);
-      }
+    const dangerMatches = card.match(/alert-danger[^>]*>([A-Z]{2,3})</g) || [];
+    for (const dm of dangerMatches) {
+      const code = dm.match(/>([A-Z]{2,3})$/);
+      if (code) affectedStations.push(code[1]);
     }
 
-    // Extract description — take text after the line codes, clean it
-    let desc = block.replace(/^[\d.]+h\s*/i, '').replace(/L[124][A-Z]+/g, '').replace(/<[^>]*>/g, '');
-    desc = desc.replace(/&[a-z]+;/g, ' ').replace(/\s+/g, ' ').trim();
-    // Take first sentence-like chunk (up to 300 chars)
-    desc = desc.substring(0, 300).replace(/\s+\S*$/, '').trim();
-    if (desc.length < 15 || seen.has(desc)) continue;
+    // Extract description from text-uppercase text-secondary div
+    const descMatch = card.match(/text-uppercase text-secondary[^>]*>([^<]+)</);
+    let desc = descMatch ? descMatch[1].trim() : '';
+    if (desc.length < 10 || seen.has(desc)) continue;
     seen.add(desc);
 
     incidents.push({ hoursAgo, description: desc, affectedStations: [...new Set(affectedStations)] });
   }
   incidents.sort((a, b) => a.hoursAgo - b.hoursAgo);
-  return incidents.slice(0, 10);
+  return incidents.slice(0, 15);
 }
 
 async function handleLrt(res) {
@@ -169,9 +171,10 @@ async function handleLrt(res) {
   }
 
   const html = await fetchUrl('https://occasionaltransport.ca/');
-  const line1Stations = parseStations(html, LINE1);
-  const line2Stations = parseStations(html, LINE2);
-  const line4Stations = parseStations(html, LINE4);
+  // IDs: stationDetails{Key} (L1), stationDetails2{Key} (L2), stationDetails4{Key} (L4)
+  const line1Stations = parseStations(html, LINE1, '');
+  const line2Stations = parseStations(html, LINE2, '2');
+  const line4Stations = parseStations(html, LINE4, '4');
 
   const result = {
     line1: { status: line1Stations.some(s => !s.ok) ? 'disrupted' : 'running', stations: line1Stations },
