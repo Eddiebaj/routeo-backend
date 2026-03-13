@@ -20,7 +20,7 @@
     },
     {
       "path": "/api/cron-push?job=lrt",
-      "schedule": "*/5 6-23 * * *"
+      "schedule": "0 * * * *"
     }
   ]
 }

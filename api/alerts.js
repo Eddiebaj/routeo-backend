@@ -53,23 +53,57 @@ function categorize(title) {
   return 'general';
 }
 
-async function handleAlerts(res) {
-  const xml = await fetchUrl(RSS_URL);
-  const itemMatches = xml.match(/<item>([\s\S]*?)<\/item>/g) || [];
+const STO_ALERTS_URL = 'https://www.sto.ca/rss-alertes';
 
-  const alerts = itemMatches.map((item, index) => {
-    const title       = stripHtml(extractTag(item, 'title'));
-    const description = stripHtml(extractTag(item, 'description'));
-    const link        = extractTag(item, 'link');
-    const pubDate     = extractTag(item, 'pubDate');
-    const routes      = extractRoutes(title + ' ' + description);
-    const category    = categorize(title);
-    return {
-      id: index, title,
-      description: description.slice(0, 300) + (description.length > 300 ? '...' : ''),
-      link, pubDate, routes, category,
-    };
-  });
+async function handleAlerts(res) {
+  // Fetch OC Transpo and STO alerts in parallel
+  const [ocResult, stoResult] = await Promise.allSettled([
+    fetchUrl(RSS_URL),
+    fetchUrl(STO_ALERTS_URL),
+  ]);
+
+  const alerts = [];
+
+  // Parse OC Transpo alerts
+  if (ocResult.status === 'fulfilled') {
+    const xml = ocResult.value;
+    const itemMatches = xml.match(/<item>([\s\S]*?)<\/item>/g) || [];
+    for (let i = 0; i < itemMatches.length; i++) {
+      const item = itemMatches[i];
+      const title       = stripHtml(extractTag(item, 'title'));
+      const description = stripHtml(extractTag(item, 'description'));
+      const link        = extractTag(item, 'link');
+      const pubDate     = extractTag(item, 'pubDate');
+      const routes      = extractRoutes(title + ' ' + description);
+      const category    = categorize(title);
+      alerts.push({
+        id: i, title,
+        description: description.slice(0, 300) + (description.length > 300 ? '...' : ''),
+        link, pubDate, routes, category, agency: 'OC',
+      });
+    }
+  }
+
+  // Parse STO alerts
+  if (stoResult.status === 'fulfilled') {
+    const stoXml = stoResult.value;
+    const stoItems = stoXml.match(/<item>([\s\S]*?)<\/item>/g) || [];
+    const ocCount = alerts.length;
+    for (let i = 0; i < stoItems.length; i++) {
+      const item = stoItems[i];
+      const title       = stripHtml(extractTag(item, 'title'));
+      const description = stripHtml(extractTag(item, 'description'));
+      const link        = extractTag(item, 'link');
+      const pubDate     = extractTag(item, 'pubDate');
+      const routes      = extractRoutes(title + ' ' + description);
+      const category    = categorize(title);
+      alerts.push({
+        id: ocCount + i, title: `[STO] ${title}`,
+        description: description.slice(0, 300) + (description.length > 300 ? '...' : ''),
+        link, pubDate, routes, category, agency: 'STO',
+      });
+    }
+  }
 
   res.json({ ok: true, count: alerts.length, alerts, fetchedAt: new Date().toISOString() });
 }
