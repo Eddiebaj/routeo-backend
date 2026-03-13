@@ -16,6 +16,10 @@
  * Transit scores:
  *   GET  /api/community?action=transit_score&neighbourhood=byward
  *   GET  /api/community?action=transit_scores    — All neighbourhood scores
+ *
+ * Deal votes:
+ *   POST /api/community?action=deal.vote         — Vote on a community deal
+ *   GET  /api/community?action=deal.votes&neighbourhood_id=X — Get votes for deals
  */
 
 const { createClient } = require('@supabase/supabase-js');
@@ -203,6 +207,62 @@ module.exports = async (req, res) => {
 
         if (error) throw error;
         return res.json({ scores: data || [] });
+      }
+
+      // ── Deal: Vote on a community deal ─────────────────────────
+      case 'deal.vote': {
+        if (req.method !== 'POST') return res.status(405).json({ error: 'POST required' });
+        const { deal_id, device_id, vote_type } = req.body || {};
+        if (!deal_id || !device_id || !['up', 'down'].includes(vote_type)) {
+          return res.status(400).json({ error: 'Missing deal_id, device_id, or invalid vote_type (up|down)' });
+        }
+
+        const { error } = await supabase
+          .from('community_deal_votes')
+          .upsert({
+            deal_id,
+            device_id,
+            vote_type,
+            created_at: new Date().toISOString(),
+          }, { onConflict: 'deal_id,device_id' });
+
+        if (error) throw error;
+        return res.json({ ok: true });
+      }
+
+      // ── Deal: Get votes for all deals in a neighbourhood ──────
+      case 'deal.votes': {
+        const neighbourhood_id = req.query.neighbourhood_id;
+        if (!neighbourhood_id) return res.status(400).json({ error: 'Missing neighbourhood_id' });
+
+        // Get all deal IDs for this neighbourhood
+        const { data: deals, error: dealsErr } = await supabase
+          .from('community_deals')
+          .select('id')
+          .eq('neighbourhood_id', neighbourhood_id)
+          .eq('approved', true);
+
+        if (dealsErr) throw dealsErr;
+
+        const dealIds = (deals || []).map(d => d.id);
+        if (dealIds.length === 0) return res.json({ votes: {} });
+
+        const { data: votes, error: votesErr } = await supabase
+          .from('community_deal_votes')
+          .select('deal_id, vote_type')
+          .in('deal_id', dealIds);
+
+        if (votesErr) throw votesErr;
+
+        // Aggregate votes by deal_id
+        const result = {};
+        for (const v of (votes || [])) {
+          if (!result[v.deal_id]) result[v.deal_id] = { up: 0, down: 0 };
+          if (v.vote_type === 'up') result[v.deal_id].up++;
+          else if (v.vote_type === 'down') result[v.deal_id].down++;
+        }
+
+        return res.json({ votes: result });
       }
 
       default:
