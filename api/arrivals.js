@@ -9,8 +9,48 @@ const supabase = createClient(
 const OC_KEY = process.env.OC_TRANSPO_API_KEY || 'b08f2056bef846cf8a0d1487c59b6d74';
 const STO_KEY = process.env.STO_API_KEY || '047BF16E296E977027D2D8374F8CEEC1';
 
+const AdmZip = require('adm-zip');
+
 const GTFS_RT_URL = 'https://nextrip-public-api.azure-api.net/octranspo/gtfs-rt-tu/beta/v1/TripUpdates?format=json';
 const STO_GTFS_RT_URL = 'https://www.sto.ca/sites/default/files/opendata/gtfs_rt/TripUpdates.pb';
+const STO_GTFS_ZIP_URL = 'https://www.sto.ca/sites/default/files/opendata/gtfs/google_transit.zip';
+
+// ── STO headsign lookup (cached in module scope, refreshed daily) ──
+let stoTripsMap = {};      // { [trip_id]: headsign }
+let stoTripsLoadedAt = 0;  // timestamp of last load
+const STO_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+
+async function getSTOTripsMap() {
+  if (Object.keys(stoTripsMap).length > 0 && Date.now() - stoTripsLoadedAt < STO_CACHE_TTL) {
+    return stoTripsMap;
+  }
+  try {
+    const resp = await fetch(STO_GTFS_ZIP_URL, { signal: AbortSignal.timeout(15000) });
+    if (!resp.ok) throw new Error(`STO GTFS zip HTTP ${resp.status}`);
+    const buf = Buffer.from(await resp.arrayBuffer());
+    const zip = new AdmZip(buf);
+    const tripsEntry = zip.getEntry('trips.txt');
+    if (!tripsEntry) throw new Error('trips.txt not found in STO GTFS zip');
+    const lines = tripsEntry.getData().toString('utf8').trim().split('\n');
+    const header = lines[0].replace(/\r/g, '').split(',');
+    const idxTripId = header.indexOf('trip_id');
+    const idxHeadsign = header.indexOf('trip_headsign');
+    if (idxTripId < 0) throw new Error('trip_id column not found');
+    const map = {};
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].replace(/\r/g, '').split(',');
+      if (!cols[idxTripId]) continue;
+      map[cols[idxTripId]] = idxHeadsign >= 0 ? (cols[idxHeadsign] || '') : '';
+    }
+    stoTripsMap = map;
+    stoTripsLoadedAt = Date.now();
+    console.log(`STO trips.txt loaded: ${Object.keys(map).length} trips`);
+  } catch (err) {
+    console.error('STO trips.txt load failed:', err.message);
+    // Keep stale cache if available
+  }
+  return stoTripsMap;
+}
 
 // ── STO stop detection ─────────────────────────────────────────
 // STO stop IDs are purely numeric and typically 5 digits starting with 1-5
@@ -211,6 +251,9 @@ async function fetchRealtime(stopId) {
 
 // ── Fetch STO GTFS-RT live predictions ────────────────────────
 async function fetchSTORealtime(stopId) {
+  // Kick off trips map load in parallel with GTFS-RT fetch
+  const tripsMapP = getSTOTripsMap();
+
   const resp = await fetch(STO_GTFS_RT_URL, {
     headers: { 'apikey': STO_KEY },
     signal: AbortSignal.timeout(8000),
@@ -222,6 +265,7 @@ async function fetchSTORealtime(stopId) {
     new Uint8Array(buffer)
   );
 
+  const tripsMap = await tripsMapP;
   const now = Math.floor(Date.now() / 1000);
   const results = [];
 
@@ -236,11 +280,28 @@ async function fetchSTORealtime(stopId) {
       const secsAway = t - now;
       if (secsAway < -60 || secsAway > 5400) continue;
       const trip = tu.trip || {};
+      const tripId = String(trip.tripId || '');
+      const routeId = trip.routeId || '?';
+
+      // Resolve headsign: GTFS-RT vehicle descriptor → trips.txt lookup → fallback
+      let headsign = '';
+      if (tu.vehicle && tu.vehicle.label) {
+        headsign = tu.vehicle.label;
+      }
+      if (!headsign && tripId && tripsMap[tripId]) {
+        headsign = tripsMap[tripId];
+      }
+      if (!headsign) {
+        headsign = `Route ${routeId}`;
+      } else {
+        headsign = cleanHeadsign(headsign, routeId);
+      }
+
       results.push({
         stopId,
-        routeId: trip.routeId || '?',
-        tripId: String(trip.tripId || ''),
-        headsign: `Route ${trip.routeId || '?'}`,
+        routeId,
+        tripId,
+        headsign,
         minsAway: Math.max(0, Math.round(secsAway / 60)),
         arrivalTime: t,
         departureTime: t,
