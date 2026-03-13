@@ -36,6 +36,19 @@ async function batchInsert(table, rows) {
   console.log();
 }
 
+// Upsert stops: only update GTFS fields, never overwrite OSM amenity columns
+async function batchUpsertStops(rows) {
+  for (let i = 0; i < rows.length; i += BATCH) {
+    const { error } = await supabase.from('stops').upsert(rows.slice(i, i + BATCH), {
+      onConflict: 'stop_id',
+      ignoreDuplicates: false,
+    });
+    if (error) throw new Error(`stops upsert failed at ${i}: ${error.message}`);
+    process.stdout.write(`\r  stops: ${Math.min(i+BATCH, rows.length)}/${rows.length}`);
+  }
+  console.log();
+}
+
 async function main() {
   console.log('=== RouteO GTFS Seed ===\n');
 
@@ -65,7 +78,7 @@ async function main() {
   for (let i = 1; i < stopLines.length; i++) {
     const c = stopLines[i].replace(/\r/g,'').split(',');
     if (!c[slId]) continue;
-    stopRows.push({ stop_id:c[slId], stop_name:c[slName]||'', stop_lat:parseFloat(c[slLat])||0, stop_lon:parseFloat(c[slLon])||0 });
+    stopRows.push({ stop_id:c[slId], stop_name:c[slName]||'', stop_lat:parseFloat(c[slLat])||0, stop_lon:parseFloat(c[slLon])||0, agency:'OC' });
   }
   console.log(`  ${stopRows.length} stops parsed`);
 
@@ -83,11 +96,9 @@ async function main() {
   }
   console.log(`  ${stRows.length} stop_times parsed`);
 
-  // Clear and re-upload stops
-  console.log('Clearing stops...');
-  await supabase.from('stops').delete().neq('stop_id','');
-  console.log('Uploading stops...');
-  await batchInsert('stops', stopRows);
+  // Upsert stops — preserve has_shelter, has_bench, has_bin (set by OSM import)
+  console.log('Upserting stops (preserving amenity columns)...');
+  await batchUpsertStops(stopRows);
 
   // Clear and re-upload trips
   console.log('Clearing trips...');
