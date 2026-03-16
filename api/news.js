@@ -154,7 +154,7 @@ async function fetchAllFeeds() {
     return db - da;
   });
 
-  return { articles: articles.slice(0, 20), sources };
+  return { articles: articles.slice(0, 100), sources };
 }
 
 module.exports = async (req, res) => {
