@@ -8,7 +8,7 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
 
-  const { fromLat, fromLng, fromLabel, toLat, toLng, toLabel, time, date, arriveBy } = req.query;
+  const { fromLat, fromLng, fromLabel, toLat, toLng, toLabel, time, date, arriveBy, mode, wheelchair } = req.query;
 
   if (!fromLat || !fromLng || !toLat || !toLng) {
     return res.status(400).json({ error: 'Missing required parameters' });
@@ -17,11 +17,18 @@ export default async function handler(req, res) {
   const tripDate = date || formatDate(new Date());
   const tripTime = time || formatTime(new Date());
 
+  // Map client mode to OTP mode string
+  const MODE_MAP = { transit: 'TRANSIT,WALK', driving: 'CAR', bicycling: 'BICYCLE', walking: 'WALK' };
+  const otpMode = MODE_MAP[mode] || MODE_MAP.transit;
+  const isTransit = !mode || mode === 'transit';
+
   const otpUrl = `${OTP_BASE}/otp/routers/default/plan` +
     `?fromPlace=${fromLat},${fromLng}&toPlace=${toLat},${toLng}` +
     `&time=${encodeURIComponent(tripTime)}&date=${encodeURIComponent(tripDate)}` +
-    `&mode=TRANSIT,WALK&numItineraries=5&maxWalkDistance=1200&walkSpeed=1.4` +
-    `&arriveBy=${arriveBy === 'true' ? 'true' : 'false'}`;
+    `&mode=${otpMode}&numItineraries=${isTransit ? 5 : 3}` +
+    (isTransit ? '&maxWalkDistance=1200&walkSpeed=1.4' : '') +
+    `&arriveBy=${arriveBy === 'true' ? 'true' : 'false'}` +
+    (wheelchair === 'true' ? '&wheelchair=true' : '');
 
   try {
     const otpResp = await fetch(otpUrl, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(15000) });
