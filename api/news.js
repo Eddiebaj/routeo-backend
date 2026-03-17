@@ -1,6 +1,6 @@
 /**
  * RouteO — Local News Aggregator
- * GET /api/news          — merged feed from 6 Ottawa RSS sources
+ * GET /api/news          — merged feed from 8 Ottawa RSS sources
  * GET /api/news?q=keyword — filter articles by keyword
  */
 
@@ -94,6 +94,8 @@ const FEEDS = [
   { name: 'Capital Current', url: 'https://capitalcurrent.ca/feed/', critical: false },
   { name: 'City of Ottawa', url: 'https://ottawa.ca/en/news/rss', critical: false },
   { name: 'Apt613', url: 'https://apt613.ca/feed/', critical: false },
+  { name: 'Lowertown Echo', url: 'https://lowertownecho.ca/feed/', critical: false },
+  { name: 'Kitchissippi Times', url: 'https://kitchissippi.com/feed/', critical: false },
 ];
 
 // ── Per-feed failure tracking for adaptive retries ───────────────
