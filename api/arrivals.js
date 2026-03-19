@@ -327,9 +327,11 @@ async function fetchSTORealtime(stopId) {
 
 // ── Fetch static GTFS schedule ────────────────────────────────
 async function fetchStatic(stopId) {
-  const now = new Date();
-  const currentMins = now.getHours() * 60 + now.getMinutes();
+  const ottawaNow = new Date().toLocaleTimeString('en-CA', { timeZone: 'America/Toronto', hour12: false });
+  const [h, m] = ottawaNow.split(':').map(Number);
+  const currentMins = h * 60 + m;
   const maxMins = currentMins + 90;
+  console.log(`[fetchStatic] stopId=${stopId}, ottawaNow=${ottawaNow}, currentMins=${currentMins}, maxMins=${maxMins}`);
 
   const { data, error } = await supabase
     .from('stop_times')
@@ -338,9 +340,11 @@ async function fetchStatic(stopId) {
     .order('arrival_time', { ascending: true });
 
   if (error) throw new Error(error.message);
+  console.log(`[fetchStatic] raw rows for stop ${stopId}: ${(data || []).length}`);
 
   const allRows = (data || []).map(row => ({ ...row, mins: timeToMins(row.arrival_time) }));
   const inWindow = allRows.filter(row => row.mins >= currentMins && row.mins <= maxMins);
+  console.log(`[fetchStatic] rows in time window: ${inWindow.length}`);
 
   let finalRows = inWindow.filter(row => serviceMatchesToday(row.service_id));
   if (finalRows.length === 0) finalRows = inWindow;
@@ -380,17 +384,26 @@ async function fetchStatic(stopId) {
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
 
-  const stopId = req.query.stop || req.query.stopId;
-  if (!stopId) return res.status(400).json({ error: 'stop param required' });
+  const rawStopId = req.query.stop || req.query.stopId;
+  if (!rawStopId) return res.status(400).json({ error: 'stop param required' });
+  // Strip leading zeros: "0322" → "322", but keep "0" as "0"
+  const stopId = rawStopId.replace(/^0+/, '') || rawStopId;
 
   const isSTO = isSTOStop(stopId);
+
+  // Look up stop name (best-effort, non-blocking)
+  let stopName = null;
+  try {
+    const { data: stopRow } = await supabase.from('stops').select('stop_name').eq('stop_id', stopId).single();
+    if (stopRow) stopName = stopRow.stop_name;
+  } catch {}
 
   // ── STO stop flow ──────────────────────────────────────────
   if (isSTO) {
     try {
       const stoArrivals = await fetchSTORealtime(stopId);
       if (stoArrivals.length > 0) {
-        return res.json({ stop: stopId, arrivals: stoArrivals, source: 'sto-gtfs-rt', agency: 'STO' });
+        return res.json({ stop: stopId, stopName, arrivals: stoArrivals, source: 'sto-gtfs-rt', agency: 'STO' });
       }
     } catch (err) {
       console.error('STO GTFS-RT failed:', err.message);
@@ -398,7 +411,7 @@ module.exports = async (req, res) => {
     // STO static fallback
     try {
       const staticArrivals = await fetchStatic(stopId);
-      return res.json({ stop: stopId, arrivals: staticArrivals, source: 'gtfs-static', agency: 'STO' });
+      return res.json({ stop: stopId, stopName, arrivals: staticArrivals, source: 'gtfs-static', agency: 'STO' });
     } catch (err) {
       return res.status(500).json({ error: err.message });
     }
@@ -408,7 +421,7 @@ module.exports = async (req, res) => {
   try {
     const rtArrivals = await fetchRealtime(stopId);
     if (rtArrivals.length > 0) {
-      return res.json({ stop: stopId, arrivals: rtArrivals, source: 'gtfs-rt' });
+      return res.json({ stop: stopId, stopName, arrivals: rtArrivals, source: 'gtfs-rt' });
     }
   } catch {
     // GTFS-RT failed, fall through to static
@@ -416,7 +429,7 @@ module.exports = async (req, res) => {
 
   try {
     const staticArrivals = await fetchStatic(stopId);
-    return res.json({ stop: stopId, arrivals: staticArrivals, source: 'gtfs-static' });
+    return res.json({ stop: stopId, stopName, arrivals: staticArrivals, source: 'gtfs-static' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
