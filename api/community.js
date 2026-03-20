@@ -20,10 +20,16 @@
  * Deal votes:
  *   POST /api/community?action=deal.vote         — Vote on a community deal
  *   GET  /api/community?action=deal.votes&neighbourhood_id=X — Get votes for deals
+ *   POST /api/community?action=deal.notify       — Log new deal submission (admin notification)
  *
  * Crowding:
  *   POST /api/community?action=crowding.report   — Submit a crowding report
  *   GET  /api/community?action=crowding.predict&route_id=X&stop_id=Y — Get prediction
+ *
+ * Ghost bus:
+ *   POST /api/community?action=ghost.report       — Submit ghost bus / confirmed arrival
+ *   GET  /api/community?action=ghost.stats&stop_id=X — Aggregated ghost reports (last 60min)
+ *   GET  /api/community?action=ghost.device_stats&device_id=X — Weekly stats for device
  */
 
 const { createClient } = require('@supabase/supabase-js');
@@ -333,6 +339,136 @@ module.exports = async (req, res) => {
           avg_crowding: Math.round(avgCrowding * 100) / 100,
           report_count: totalReports,
           confidence,
+        });
+      }
+
+      // ── Deal: Notify admin of new community submission ─────────
+      case 'deal.notify': {
+        if (req.method !== 'POST') return res.status(405).json({ error: 'POST required' });
+        const { venue_name, deal_type, deal_description, address } = req.body || {};
+        if (!venue_name) return res.status(400).json({ error: 'Missing venue_name' });
+
+        const timestamp = new Date().toISOString();
+        const summary = [
+          `New community deal submitted`,
+          `Venue: ${venue_name}`,
+          `Type: ${deal_type || 'N/A'}`,
+          `Details: ${deal_description || 'N/A'}`,
+          address ? `Address: ${address}` : null,
+          `Time: ${timestamp}`,
+        ].filter(Boolean).join('\n');
+
+        // Log for Vercel function logs (always visible in dashboard)
+        console.log('=== NEW COMMUNITY DEAL ===');
+        console.log(summary);
+        console.log('==========================');
+
+        return res.json({ ok: true, logged: true });
+      }
+
+      // ── Ghost bus: Submit report ─────────────────────────────────
+      case 'ghost.report': {
+        if (req.method !== 'POST') return res.status(405).json({ error: 'POST required' });
+        const { stop_id, route_id, report_type, notes, device_id } = req.body || {};
+        if (!stop_id || !route_id || !report_type || !device_id) {
+          return res.status(400).json({ error: 'Missing stop_id, route_id, report_type, or device_id' });
+        }
+        const validTypes = ['drove_past', 'out_of_service', 'never_showed', 'wrong_destination', 'confirmed_arrived'];
+        if (!validTypes.includes(report_type)) {
+          return res.status(400).json({ error: `Invalid report_type. Must be one of: ${validTypes.join(', ')}` });
+        }
+
+        const { error } = await supabase
+          .from('stop_reports')
+          .insert({
+            stop_id,
+            category: report_type,
+            route_id: route_id,
+            description: notes || '',
+            device_id,
+          });
+
+        if (error) throw error;
+        return res.json({ ok: true });
+      }
+
+      // ── Ghost bus: Get aggregation for a stop ───────────────────
+      case 'ghost.stats': {
+        const stop_id = req.query.stop_id;
+        if (!stop_id) return res.status(400).json({ error: 'Missing stop_id' });
+
+        const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
+        const { data, error } = await supabase
+          .from('stop_reports')
+          .select('route_id, category, device_id')
+          .eq('stop_id', stop_id)
+          .gte('created_at', oneHourAgo);
+
+        if (error) throw error;
+
+        const ghostReports = {};
+        for (const row of (data || [])) {
+          const rid = row.route_id;
+          if (!rid) continue;
+          if (!ghostReports[rid]) ghostReports[rid] = { ghost: [], confirmed: [], devices: new Set() };
+          if (row.category === 'confirmed_arrived') {
+            ghostReports[rid].confirmed.push(row);
+          } else {
+            ghostReports[rid].ghost.push(row);
+            ghostReports[rid].devices.add(row.device_id);
+          }
+        }
+
+        const result = {};
+        for (const [rid, data] of Object.entries(ghostReports)) {
+          const total = data.ghost.length;
+          const uniqueDevices = data.devices.size;
+          const confirmedCount = data.confirmed.length;
+          const netScore = total - (confirmedCount * 2);
+          result[rid] = {
+            total,
+            uniqueDevices,
+            confirmedCount,
+            netScore,
+            likelyGhost: netScore >= 3,
+          };
+        }
+
+        return res.json({ ghostReports: result });
+      }
+
+      // ── Ghost bus: Weekly stats for a device ────────────────────
+      case 'ghost.device_stats': {
+        const device_id = req.query.device_id;
+        if (!device_id) return res.status(400).json({ error: 'Missing device_id' });
+
+        const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+        const { data, error } = await supabase
+          .from('stop_reports')
+          .select('route_id, category, created_at')
+          .eq('device_id', device_id)
+          .neq('category', 'confirmed_arrived')
+          .gte('created_at', oneWeekAgo);
+
+        if (error) throw error;
+
+        const rows = data || [];
+        const routeCounts = {};
+        for (const r of rows) {
+          if (r.route_id) routeCounts[r.route_id] = (routeCounts[r.route_id] || 0) + 1;
+        }
+        let mostAffected = null;
+        let maxCount = 0;
+        for (const [rid, cnt] of Object.entries(routeCounts)) {
+          if (cnt > maxCount) { maxCount = cnt; mostAffected = rid; }
+        }
+
+        return res.json({
+          totalThisWeek: rows.length,
+          mostAffectedRoute: mostAffected,
+          mostAffectedCount: maxCount,
         });
       }
 

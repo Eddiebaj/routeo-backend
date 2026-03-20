@@ -398,12 +398,41 @@ module.exports = async (req, res) => {
     if (stopRow) stopName = stopRow.stop_name;
   } catch {}
 
+  // ── Fetch ghost reports in parallel ────────────────────────
+  let ghostReports = {};
+  const ghostPromise = (async () => {
+    try {
+      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      const { data } = await supabase
+        .from('stop_reports')
+        .select('route_id, category, device_id')
+        .eq('stop_id', stopId)
+        .gte('created_at', oneHourAgo);
+      const byRoute = {};
+      for (const row of (data || [])) {
+        if (!row.route_id) continue;
+        if (!byRoute[row.route_id]) byRoute[row.route_id] = { ghost: 0, confirmed: 0, devices: new Set() };
+        if (row.category === 'confirmed_arrived') {
+          byRoute[row.route_id].confirmed++;
+        } else {
+          byRoute[row.route_id].ghost++;
+          byRoute[row.route_id].devices.add(row.device_id);
+        }
+      }
+      for (const [rid, d] of Object.entries(byRoute)) {
+        const netScore = d.ghost - (d.confirmed * 2);
+        ghostReports[rid] = { total: d.ghost, uniqueDevices: d.devices.size, confirmedCount: d.confirmed, netScore, likelyGhost: netScore >= 3 };
+      }
+    } catch (e) { console.warn('ghost aggregation failed:', e.message); }
+  })();
+
   // ── STO stop flow ──────────────────────────────────────────
   if (isSTO) {
     try {
       const stoArrivals = await fetchSTORealtime(stopId);
       if (stoArrivals.length > 0) {
-        return res.json({ stop: stopId, stopName, arrivals: stoArrivals, source: 'sto-gtfs-rt', agency: 'STO' });
+        await ghostPromise;
+        return res.json({ stop: stopId, stopName, arrivals: stoArrivals, source: 'sto-gtfs-rt', agency: 'STO', ghostReports });
       }
     } catch (err) {
       console.error('STO GTFS-RT failed:', err.message);
@@ -411,7 +440,8 @@ module.exports = async (req, res) => {
     // STO static fallback
     try {
       const staticArrivals = await fetchStatic(stopId);
-      return res.json({ stop: stopId, stopName, arrivals: staticArrivals, source: 'gtfs-static', agency: 'STO' });
+      await ghostPromise;
+      return res.json({ stop: stopId, stopName, arrivals: staticArrivals, source: 'gtfs-static', agency: 'STO', ghostReports });
     } catch (err) {
       return res.status(500).json({ error: err.message });
     }
@@ -421,7 +451,8 @@ module.exports = async (req, res) => {
   try {
     const rtArrivals = await fetchRealtime(stopId);
     if (rtArrivals.length > 0) {
-      return res.json({ stop: stopId, stopName, arrivals: rtArrivals, source: 'gtfs-rt' });
+      await ghostPromise;
+      return res.json({ stop: stopId, stopName, arrivals: rtArrivals, source: 'gtfs-rt', ghostReports });
     }
   } catch {
     // GTFS-RT failed, fall through to static
@@ -429,7 +460,8 @@ module.exports = async (req, res) => {
 
   try {
     const staticArrivals = await fetchStatic(stopId);
-    return res.json({ stop: stopId, stopName, arrivals: staticArrivals, source: 'gtfs-static' });
+    await ghostPromise;
+    return res.json({ stop: stopId, stopName, arrivals: staticArrivals, source: 'gtfs-static', ghostReports });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
