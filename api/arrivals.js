@@ -463,6 +463,6 @@ module.exports = async (req, res) => {
     await ghostPromise;
     return res.json({ stop: stopId, stopName, arrivals: staticArrivals, source: 'gtfs-static', ghostReports });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 };
