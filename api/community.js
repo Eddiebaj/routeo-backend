@@ -421,10 +421,10 @@ module.exports = async (req, res) => {
         }
 
         const result = {};
-        for (const [rid, data] of Object.entries(ghostReports)) {
-          const total = data.ghost.length;
-          const uniqueDevices = data.devices.size;
-          const confirmedCount = data.confirmed.length;
+        for (const [rid, agg] of Object.entries(ghostReports)) {
+          const total = agg.ghost.length;
+          const uniqueDevices = agg.devices.size;
+          const confirmedCount = agg.confirmed.length;
           const netScore = total - (confirmedCount * 2);
           result[rid] = {
             total,
