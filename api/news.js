@@ -122,7 +122,7 @@ async function fetchAllFeeds() {
       const xml = await fetchWithRetry(feed.url, retries);
       // Reset failure counter on success
       feedFailures[feed.name] = 0;
-      const items = xml.match(/<item>([\s\S]*?)<\/item>/g) || [];
+      const items = xml.match(/<item[\s>]([\s\S]*?)<\/item>/g) || [];
       return items.map((item, i) => {
         const title = stripHtml(extractTag(item, 'title'));
         const link = extractTag(item, 'link');
