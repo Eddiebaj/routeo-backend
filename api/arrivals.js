@@ -337,11 +337,21 @@ async function fetchStatic(stopId) {
   // Expand multi-platform stops (same as fetchRealtime)
   const stopIds = MULTI_PLATFORM_STOPS[stopId] || [stopId];
 
-  const { data, error } = await supabase
-    .from('stop_times')
-    .select('arrival_time, route_id, headsign, service_id, trip_id, stop_id')
-    .in('stop_id', stopIds)
-    .order('arrival_time', { ascending: true });
+  // Query each platform separately and merge (avoids slow .in() on large stop_times table)
+  let allData = [];
+  for (const sid of stopIds) {
+    const { data: rows, error: err } = await supabase
+      .from('stop_times')
+      .select('arrival_time, route_id, headsign, service_id, trip_id, stop_id')
+      .eq('stop_id', sid)
+      .order('arrival_time', { ascending: true });
+    if (err) throw new Error(err.message);
+    if (rows) allData.push(...rows);
+  }
+  // Sort merged results by arrival time
+  allData.sort((a, b) => (a.arrival_time || '').localeCompare(b.arrival_time || ''));
+  const data = allData;
+  const error = null;
 
   if (error) throw new Error(error.message);
   console.log(`[fetchStatic] raw rows for stop ${stopId} (${stopIds.length} platforms): ${(data || []).length}`);
