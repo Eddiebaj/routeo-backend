@@ -448,6 +448,20 @@ module.exports = async (req, res) => {
 
   const isSTO = isSTOStop(stopId);
 
+  // Check GTFS data freshness (non-blocking)
+  let dataWarning = null;
+  const freshnessPromise = (async () => {
+    try {
+      const metaKey = isSTO ? 'sto_last_updated' : 'oc_last_updated';
+      const { data: meta } = await supabase.from('gtfs_metadata').select('value').eq('key', metaKey).single();
+      if (meta?.value) {
+        const lastUpdated = new Date(meta.value);
+        const hoursAgo = (Date.now() - lastUpdated.getTime()) / (1000 * 60 * 60);
+        if (hoursAgo > 48) dataWarning = 'Schedule data may be outdated';
+      }
+    } catch {}
+  })();
+
   // Look up stop name (best-effort, non-blocking) — try requested ID first, then platforms
   let stopName = null;
   try {
@@ -490,13 +504,19 @@ module.exports = async (req, res) => {
     } catch (e) { console.warn('ghost aggregation failed:', e.message); }
   })();
 
+  // Helper to build response with optional data warning
+  const buildResp = (base) => {
+    if (dataWarning) base.dataWarning = dataWarning;
+    return base;
+  };
+
   // ── STO stop flow ──────────────────────────────────────────
   if (isSTO) {
     try {
       const stoArrivals = await fetchSTORealtime(stopId);
       if (stoArrivals.length > 0) {
-        await ghostPromise;
-        return res.json({ stop: stopId, stopName, arrivals: stoArrivals, source: 'sto-gtfs-rt', agency: 'STO', ghostReports });
+        await Promise.all([ghostPromise, freshnessPromise]);
+        return res.json(buildResp({ stop: stopId, stopName, arrivals: stoArrivals, source: 'sto-gtfs-rt', agency: 'STO', ghostReports }));
       }
     } catch (err) {
       console.error('STO GTFS-RT failed:', err.message);
@@ -504,8 +524,8 @@ module.exports = async (req, res) => {
     // STO static fallback
     try {
       const staticArrivals = await fetchStatic(stopId);
-      await ghostPromise;
-      return res.json({ stop: stopId, stopName, arrivals: staticArrivals, source: 'gtfs-static', agency: 'STO', ghostReports });
+      await Promise.all([ghostPromise, freshnessPromise]);
+      return res.json(buildResp({ stop: stopId, stopName, arrivals: staticArrivals, source: 'gtfs-static', agency: 'STO', ghostReports }));
     } catch (err) {
       return res.status(500).json({ error: err.message });
     }
@@ -515,8 +535,8 @@ module.exports = async (req, res) => {
   try {
     const rtArrivals = await fetchRealtime(stopId);
     if (rtArrivals.length > 0) {
-      await ghostPromise;
-      return res.json({ stop: stopId, stopName, arrivals: rtArrivals, source: 'gtfs-rt', ghostReports });
+      await Promise.all([ghostPromise, freshnessPromise]);
+      return res.json(buildResp({ stop: stopId, stopName, arrivals: rtArrivals, source: 'gtfs-rt', ghostReports }));
     }
   } catch {
     // GTFS-RT failed, fall through to static
@@ -524,8 +544,8 @@ module.exports = async (req, res) => {
 
   try {
     const staticArrivals = await fetchStatic(stopId);
-    await ghostPromise;
-    return res.json({ stop: stopId, stopName, arrivals: staticArrivals, source: 'gtfs-static', ghostReports });
+    await Promise.all([ghostPromise, freshnessPromise]);
+    return res.json(buildResp({ stop: stopId, stopName, arrivals: staticArrivals, source: 'gtfs-static', ghostReports }));
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }

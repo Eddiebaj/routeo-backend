@@ -1,6 +1,12 @@
 // api/places.js — Combined Google API proxy
 // Actions: autocomplete, details, photo, nearby, geocode, autocomplete-geocode
+import { createClient } from '@supabase/supabase-js';
+
 const GOOGLE_KEY = process.env.GOOGLE_API_KEY;
+const supabase = createClient(
+  process.env.SUPABASE_URL || 'https://bzvkadttywgszovbowch.supabase.co',
+  process.env.SUPABASE_KEY || 'sb_publishable_UQXeqJ_OE-Zhl51qrHVF3w_UXOxKk2O'
+);
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -97,6 +103,42 @@ export default async function handler(req, res) {
       case 'autocomplete-geocode': {
         const { input } = req.query;
         if (!input) return res.status(400).json({ error: 'Missing input' });
+
+        // If input is purely numeric, try direct stop_id lookup first
+        if (/^\d{3,5}$/.test(input.trim())) {
+          try {
+            const { data: stopRow } = await supabase
+              .from('stops')
+              .select('stop_id, stop_name, stop_lat, stop_lon')
+              .eq('stop_id', input.trim())
+              .single();
+            if (stopRow && stopRow.stop_lat && stopRow.stop_lon) {
+              // Return stop as first result, then continue with Google results
+              const stopResult = {
+                placeId: `stop_${stopRow.stop_id}`,
+                label: `Stop ${stopRow.stop_id} — ${stopRow.stop_name || 'Transit Stop'}`,
+                lat: stopRow.stop_lat,
+                lng: stopRow.stop_lon,
+                stopId: stopRow.stop_id,
+                isTransitStop: true,
+              };
+              // Still fetch Google results to append
+              try {
+                const gResp = await fetch(
+                  `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(input)}&location=45.4215,-75.6972&radius=50000&strictbounds=false&components=country:ca&key=${GOOGLE_KEY}`,
+                  { signal: AbortSignal.timeout(3000) }
+                );
+                const gData = await gResp.json();
+                const googleResults = (gData.predictions || []).slice(0, 4).map(p => ({
+                  placeId: p.place_id, label: p.description, lat: null, lng: null,
+                }));
+                return res.status(200).json({ results: [stopResult, ...googleResults].slice(0, 5) });
+              } catch {
+                return res.status(200).json({ results: [stopResult] });
+              }
+            }
+          } catch {}
+        }
 
         const [placesResp, geoResp] = await Promise.all([
           fetch(

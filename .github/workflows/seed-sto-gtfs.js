@@ -180,6 +180,14 @@ async function main() {
   const { count: ocSt } = await supabase.from('stop_times').select('*', { count: 'exact', head: true }).eq('agency', 'OC');
   console.log(`Stop_times counts: OC=${ocSt}, STO=${stoSt}`);
 
+  // Record last update timestamp in gtfs_metadata
+  console.log('Recording STO GTFS freshness timestamp...');
+  const { error: metaErr } = await supabase.from('gtfs_metadata').upsert(
+    { key: 'sto_last_updated', value: new Date().toISOString(), updated_at: new Date().toISOString() },
+    { onConflict: 'key' }
+  );
+  if (metaErr) console.warn('  Warning: failed to update gtfs_metadata:', metaErr.message);
+
   console.log('\n=== Done! ===');
 }
 

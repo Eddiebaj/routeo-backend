@@ -7,10 +7,6 @@
   },
   "crons": [
     {
-      "path": "/api/cron-refresh",
-      "schedule": "0 7 * * *"
-    },
-    {
       "path": "/api/cron-push?job=garbage",
       "schedule": "0 23 * * *"
     },

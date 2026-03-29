@@ -112,6 +112,14 @@ async function main() {
   console.log('Uploading stop_times...');
   await batchInsert('stop_times', stRows);
 
+  // Record last update timestamp in gtfs_metadata
+  console.log('Recording GTFS freshness timestamp...');
+  const { error: metaErr } = await supabase.from('gtfs_metadata').upsert(
+    { key: 'oc_last_updated', value: new Date().toISOString(), updated_at: new Date().toISOString() },
+    { onConflict: 'key' }
+  );
+  if (metaErr) console.warn('  Warning: failed to update gtfs_metadata:', metaErr.message);
+
   console.log('\n=== Done! ===');
 }
 
