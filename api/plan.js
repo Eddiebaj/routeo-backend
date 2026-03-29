@@ -8,7 +8,7 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
 
-  const { fromLat, fromLng, fromLabel, toLat, toLng, toLabel, time, date, arriveBy, mode, wheelchair } = req.query;
+  const { fromLat, fromLng, fromLabel, toLat, toLng, toLabel, time, date, arriveBy, mode, wheelchair, maxWalk, walkSpeed } = req.query;
 
   if (!fromLat || !fromLng || !toLat || !toLng) {
     return res.status(400).json({ error: 'Missing required parameters' });
@@ -25,8 +25,9 @@ export default async function handler(req, res) {
   const otpUrl = `${OTP_BASE}/otp/routers/default/plan` +
     `?fromPlace=${fromLat},${fromLng}&toPlace=${toLat},${toLng}` +
     `&time=${encodeURIComponent(tripTime)}&date=${encodeURIComponent(tripDate)}` +
-    `&mode=${otpMode}&numItineraries=${isTransit ? 5 : 3}` +
-    (isTransit ? '&maxWalkDistance=1200&walkSpeed=1.4' : '') +
+    `&mode=${otpMode}&numItineraries=${isTransit ? 8 : 3}` +
+    (isTransit ? `&maxWalkDistance=${Math.min(Math.max(parseInt(maxWalk, 10) || 1000, 200), 5000)}` : '') +
+    (isTransit || mode === 'walking' ? `&walkSpeed=${walkSpeed === 'slow' ? '1.0' : walkSpeed === 'fast' ? '1.8' : '1.4'}` : '') +
     `&arriveBy=${arriveBy === 'true' ? 'true' : 'false'}` +
     (wheelchair === 'true' ? '&wheelchair=true' : '');
 
@@ -37,7 +38,35 @@ export default async function handler(req, res) {
       return res.status(502).json({ error: 'OTP returned an error', detail: text });
     }
     const data = await otpResp.json();
-    const rawItineraries = data?.plan?.itineraries || [];
+    let rawItineraries = data?.plan?.itineraries || [];
+
+    // Nearby departures fallback: if transit mode returns 0 or only walk-only results,
+    // retry with ±15 min departure windows to find routes OTP missed
+    if (isTransit && rawItineraries.length > 0) {
+      const hasTransitLegs = rawItineraries.some(it => it.legs?.some(l => l.mode !== 'WALK'));
+      if (!hasTransitLegs) {
+        const offsets = [15, -15]; // try 15min later, then 15min earlier
+        for (const offset of offsets) {
+          try {
+            const [h, m] = tripTime.split(':').map(Number);
+            const adjMin = h * 60 + m + offset;
+            const adjH = String(Math.floor(((adjMin % 1440) + 1440) % 1440 / 60)).padStart(2, '0');
+            const adjM = String(((adjMin % 60) + 60) % 60).padStart(2, '0');
+            const retryUrl = otpUrl.replace(`time=${encodeURIComponent(tripTime)}`, `time=${encodeURIComponent(`${adjH}:${adjM}`)}`);
+            const retryResp = await fetch(retryUrl, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8000) });
+            if (retryResp.ok) {
+              const retryData = await retryResp.json();
+              const retryItins = retryData?.plan?.itineraries || [];
+              const retryTransit = retryItins.filter(it => it.legs?.some(l => l.mode !== 'WALK'));
+              if (retryTransit.length > 0) {
+                rawItineraries = [...retryTransit, ...rawItineraries];
+                break;
+              }
+            }
+          } catch {}
+        }
+      }
+    }
 
     const itineraries = await Promise.all(rawItineraries.map(async (itin, itinIdx) => {
       const legs = await Promise.all(itin.legs.map(async (leg) => {
@@ -65,8 +94,8 @@ export default async function handler(req, res) {
           endTime: leg.endTime,
           duration: leg.duration,
           distance: Math.round(leg.distance),
-          from: { name: leg.from.name, lat: leg.from.lat, lon: leg.from.lon },
-          to: { name: leg.to.name, lat: leg.to.lat, lon: leg.to.lon },
+          from: { name: leg.from.name, lat: leg.from.lat, lon: leg.from.lon, stopCode: leg.from.stopCode || null, stopId: leg.from.stopId || null },
+          to: { name: leg.to.name, lat: leg.to.lat, lon: leg.to.lon, stopCode: leg.to.stopCode || null, stopId: leg.to.stopId || null },
           routeShortName: leg.routeShortName || null,
           routeLongName: leg.routeLongName || null,
           headsign: leg.headsign || null,

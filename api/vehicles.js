@@ -15,7 +15,7 @@ let stopsCache = null;
 
 async function loadStops() {
   if (stopsCache) return stopsCache;
-  const resp = await fetch(STOPS_URL);
+  const resp = await fetch(STOPS_URL, { signal: AbortSignal.timeout(10000) });
   const txt = await resp.text();
   const lines = txt.split('\n');
   const map = {};
@@ -214,6 +214,7 @@ module.exports = async (req, res) => {
 
     res.json(resp);
   } catch (err) {
-    res.status(500).json({ error: err.message, stack: err.stack });
+    console.error('vehicles error:', err);
+    res.status(500).json({ error: err.message });
   }
 };
