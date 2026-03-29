@@ -87,25 +87,13 @@ module.exports = async (req, res) => {
 async function handleRouteDetail(res, routeId) {
   const dayType = getDayType();
 
-  // Time-window: query current 3-hour window to avoid massive unfiltered results
-  const nowOttawa = new Date().toLocaleTimeString('en-CA', { timeZone: 'America/Toronto', hour12: false });
-  const [hStr, mStr] = nowOttawa.split(':');
-  const h = parseInt(hStr), m = parseInt(mStr);
-  const fromMins = h * 60 + m - 30;
-  const toMins = h * 60 + m + 150; // 2.5 hours ahead
-  const timeFrom = `${String(Math.floor(Math.max(0, fromMins) / 60)).padStart(2, '0')}:${String(Math.max(0, fromMins) % 60).padStart(2, '0')}:00`;
-  const timeTo = `${String(Math.floor(toMins / 60)).padStart(2, '0')}:${String(toMins % 60).padStart(2, '0')}:00`;
-
-  // Get stop_times for this route within time window
+  // Query by route_id only (no time filter — arrival_time lacks an index and causes timeouts)
+  // Use limit to avoid massive result sets, then filter client-side by day type
   const { data: stopTimes, error } = await supabase
     .from('stop_times')
     .select('stop_id, trip_id, arrival_time, headsign, service_id')
     .eq('route_id', routeId)
-    .gte('arrival_time', timeFrom)
-    .lte('arrival_time', timeTo)
-    .order('trip_id')
-    .order('arrival_time')
-    .limit(2000);
+    .limit(800);
 
   if (error) throw new Error(error.message);
   if (!stopTimes || stopTimes.length === 0) {
