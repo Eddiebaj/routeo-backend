@@ -87,14 +87,25 @@ module.exports = async (req, res) => {
 async function handleRouteDetail(res, routeId) {
   const dayType = getDayType();
 
-  // Get all stop_times for this route, ordered by trip + arrival
+  // Time-window: query current 3-hour window to avoid massive unfiltered results
+  const nowOttawa = new Date().toLocaleTimeString('en-CA', { timeZone: 'America/Toronto', hour12: false });
+  const [hStr, mStr] = nowOttawa.split(':');
+  const h = parseInt(hStr), m = parseInt(mStr);
+  const fromMins = h * 60 + m - 30;
+  const toMins = h * 60 + m + 150; // 2.5 hours ahead
+  const timeFrom = `${String(Math.floor(Math.max(0, fromMins) / 60)).padStart(2, '0')}:${String(Math.max(0, fromMins) % 60).padStart(2, '0')}:00`;
+  const timeTo = `${String(Math.floor(toMins / 60)).padStart(2, '0')}:${String(toMins % 60).padStart(2, '0')}:00`;
+
+  // Get stop_times for this route within time window
   const { data: stopTimes, error } = await supabase
     .from('stop_times')
     .select('stop_id, trip_id, arrival_time, headsign, service_id')
     .eq('route_id', routeId)
+    .gte('arrival_time', timeFrom)
+    .lte('arrival_time', timeTo)
     .order('trip_id')
     .order('arrival_time')
-    .limit(10000);
+    .limit(2000);
 
   if (error) throw new Error(error.message);
   if (!stopTimes || stopTimes.length === 0) {
@@ -189,8 +200,9 @@ async function handleStopFrequency(res, routeId, stopId) {
   const dayFiltered = data.filter(st => st.service_id && st.service_id.includes(dayType));
   const rows = dayFiltered.length > 0 ? dayFiltered : data;
 
-  const now = new Date();
-  const nowMins = now.getHours() * 60 + now.getMinutes();
+  const nowOttawa = new Date().toLocaleTimeString('en-CA', { timeZone: 'America/Toronto', hour12: false });
+  const [hh, mm] = nowOttawa.split(':').map(Number);
+  const nowMins = hh * 60 + mm;
 
   // Get times within a 2-hour window around now
   const windowStart = nowMins - 60;

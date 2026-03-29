@@ -99,7 +99,7 @@ const FEEDS = [
   { name: 'Ottawa Citizen', url: 'https://ottawacitizen.com/feed', critical: true },
   { name: 'Ottawa Sun', url: 'https://ottawasun.com/feed', critical: false },
   { name: 'Capital Current', url: 'https://capitalcurrent.ca/feed/', critical: false },
-  { name: 'City of Ottawa', url: 'https://ottawa.ca/en/news/rss', critical: false },
+  // City of Ottawa RSS (ottawa.ca/en/news/rss) removed — returns 404 as of March 2026
   { name: 'Apt613', url: 'https://apt613.ca/feed/', critical: false },
   { name: 'Lowertown Echo', url: 'https://lowertownecho.ca/feed/', critical: false },
   { name: 'Kitchissippi Times', url: 'https://kitchissippi.com/feed/', critical: false },
