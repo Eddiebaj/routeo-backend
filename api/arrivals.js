@@ -164,9 +164,10 @@ function timeToMins(t) {
 }
 
 function getTodayServiceKeyword() {
-  const day = new Date().getDay();
-  if (day === 0) return 'sunday';
-  if (day === 6) return 'saturday';
+  // Use Toronto timezone — Vercel runs in UTC, which can be a different day
+  const ottawaDay = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Toronto', weekday: 'long' }).toLowerCase();
+  if (ottawaDay === 'sunday') return 'sunday';
+  if (ottawaDay === 'saturday') return 'saturday';
   return 'weekday';
 }
 
@@ -222,7 +223,7 @@ async function fetchRealtime(stopId) {
     if (seen.has(key)) continue;
     seen.add(key);
     unique.push(r);
-    if (unique.length >= 5) break;
+    if (unique.length >= 8) break;
   }
 
   if (unique.length > 0) {
@@ -319,7 +320,7 @@ async function fetchSTORealtime(stopId) {
     if (seen.has(key)) continue;
     seen.add(key);
     unique.push(r);
-    if (unique.length >= 5) break;
+    if (unique.length >= 8) break;
   }
 
   return unique;
@@ -333,21 +334,25 @@ async function fetchStatic(stopId) {
   const maxMins = currentMins + 90;
   console.log(`[fetchStatic] stopId=${stopId}, ottawaNow=${ottawaNow}, currentMins=${currentMins}, maxMins=${maxMins}`);
 
+  // Expand multi-platform stops (same as fetchRealtime)
+  const stopIds = MULTI_PLATFORM_STOPS[stopId] || [stopId];
+
   const { data, error } = await supabase
     .from('stop_times')
-    .select('arrival_time, route_id, headsign, service_id, trip_id')
-    .eq('stop_id', stopId)
+    .select('arrival_time, route_id, headsign, service_id, trip_id, stop_id')
+    .in('stop_id', stopIds)
     .order('arrival_time', { ascending: true });
 
   if (error) throw new Error(error.message);
-  console.log(`[fetchStatic] raw rows for stop ${stopId}: ${(data || []).length}`);
+  console.log(`[fetchStatic] raw rows for stop ${stopId} (${stopIds.length} platforms): ${(data || []).length}`);
 
   const allRows = (data || []).map(row => ({ ...row, mins: timeToMins(row.arrival_time) }));
   const inWindow = allRows.filter(row => row.mins >= currentMins && row.mins <= maxMins);
   console.log(`[fetchStatic] rows in time window: ${inWindow.length}`);
 
+  // Filter by today's service — do NOT fall back to wrong-day schedules
   let finalRows = inWindow.filter(row => serviceMatchesToday(row.service_id));
-  if (finalRows.length === 0) finalRows = inWindow;
+  console.log(`[fetchStatic] rows matching today's service: ${finalRows.length}`);
 
   const tripIds = [...new Set(finalRows.map(r => r.trip_id).filter(Boolean))];
   let tripsMap = {};
@@ -359,15 +364,27 @@ async function fetchStatic(stopId) {
     if (tripData) for (const t of tripData) tripsMap[t.trip_id] = t;
   }
 
+  // Normalize route_id for dedup: "1-350-1" → "1-350", "42-1" → "42"
+  function normalizeRouteId(rid) {
+    if (!rid) return rid;
+    // Strip trailing variant suffix: "1-350-1" → "1-350", "42-1" → "42"
+    // Pattern: if it ends with "-{digit(s)}" and has at least one other segment, strip it
+    const parts = rid.split('-');
+    if (parts.length >= 3) return parts.slice(0, -1).join('-'); // "1-350-1" → "1-350"
+    if (parts.length === 2 && /^\d+$/.test(parts[1]) && parts[1].length <= 2) return parts[0]; // "42-1" → "42"
+    return rid;
+  }
+
   const seen = new Set();
   return finalRows
     .filter(row => {
-      const key = `${row.route_id}-${row.arrival_time}`;
+      // Dedup by normalized route + arrival time (prevents "1-350" and "1-350-1" duplicates)
+      const key = `${normalizeRouteId(row.route_id)}-${row.arrival_time}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
     })
-    .slice(0, 5)
+    .slice(0, 8)
     .map(row => {
       const trip = tripsMap[row.trip_id] || {};
       return {
@@ -391,11 +408,18 @@ module.exports = async (req, res) => {
 
   const isSTO = isSTOStop(stopId);
 
-  // Look up stop name (best-effort, non-blocking)
+  // Look up stop name (best-effort, non-blocking) — try requested ID first, then platforms
   let stopName = null;
   try {
     const { data: stopRow } = await supabase.from('stops').select('stop_name').eq('stop_id', stopId).single();
     if (stopRow) stopName = stopRow.stop_name;
+    if (!stopName) {
+      const platforms = MULTI_PLATFORM_STOPS[stopId];
+      if (platforms) {
+        const { data: platRows } = await supabase.from('stops').select('stop_name').in('stop_id', platforms).limit(1);
+        if (platRows?.[0]) stopName = platRows[0].stop_name;
+      }
+    }
   } catch {}
 
   // ── Fetch ghost reports in parallel ────────────────────────
