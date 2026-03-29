@@ -194,7 +194,14 @@ module.exports = async (req, res) => {
 
     const { vehicles: ocVehicles, debug: ocDebug } = await fetchOcVehicles(stopsMap, now, isDebug);
 
-    const allVehicles = [...ocVehicles, ...stoVehicles];
+    let allVehicles = [...ocVehicles, ...stoVehicles];
+
+    // Filter by route IDs if ?routes= param provided
+    const routesParam = req.query.routes;
+    if (routesParam) {
+      const wanted = new Set(routesParam.split(',').map(r => r.trim()));
+      allVehicles = allVehicles.filter(v => wanted.has(v.routeId));
+    }
 
     const resp = {
       vehicles: allVehicles,

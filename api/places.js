@@ -169,12 +169,19 @@ export default async function handler(req, res) {
           };
         });
 
-        const firstGeo = geoData.results?.[0];
-        for (const r of results) {
-          if (!r.lat && firstGeo) {
-            r.lat = firstGeo.geometry.location.lat;
-            r.lng = firstGeo.geometry.location.lng;
-          }
+        // For results missing coordinates, fetch individually via Place Details
+        const needCoords = results.filter(r => !r.lat && r.placeId);
+        if (needCoords.length > 0) {
+          const detailFetches = needCoords.map(r =>
+            fetch(
+              `https://maps.googleapis.com/maps/api/place/details/json?place_id=${r.placeId}&fields=geometry&key=${GOOGLE_KEY}`,
+              { signal: AbortSignal.timeout(3000) }
+            ).then(resp => resp.json()).then(data => {
+              const loc = data.result?.geometry?.location;
+              if (loc) { r.lat = loc.lat; r.lng = loc.lng; }
+            }).catch(() => {})
+          );
+          await Promise.all(detailFetches);
         }
 
         const seen = new Set(results.map(r => r.placeId));

@@ -15,7 +15,13 @@ function fetchUrl(url, timeoutMs = 8000, redirectsLeft = 3) {
       // Follow redirects (with depth limit)
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         if (redirectsLeft <= 0) return reject(new Error('Too many redirects'));
-        return fetchUrl(res.headers.location, timeoutMs, redirectsLeft - 1).then(resolve).catch(reject);
+        // Handle relative redirects by resolving against the original URL
+        let nextUrl = res.headers.location;
+        if (nextUrl.startsWith('/')) {
+          const base = new URL(url);
+          nextUrl = base.origin + nextUrl;
+        }
+        return fetchUrl(nextUrl, timeoutMs, redirectsLeft - 1).then(resolve).catch(reject);
       }
       let data = '';
       res.on('data', chunk => data += chunk);
@@ -89,7 +95,7 @@ function extractThumbnail(itemXml) {
 
 // ── RSS Sources ──────────────────────────────────────────────────
 const FEEDS = [
-  { name: 'CBC Ottawa', url: 'https://www.cbc.ca/cmlink/rss-canada-ottawa', critical: true },
+  { name: 'CBC Ottawa', url: 'https://www.cbc.ca/webfeed/rss/rss-canada-ottawa', critical: true },
   { name: 'Ottawa Citizen', url: 'https://ottawacitizen.com/feed', critical: true },
   { name: 'Ottawa Sun', url: 'https://ottawasun.com/feed', critical: false },
   { name: 'Capital Current', url: 'https://capitalcurrent.ca/feed/', critical: false },
