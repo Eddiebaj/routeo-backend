@@ -6,7 +6,7 @@ export default async function handler(req, res) {
   try {
     const resp = await fetch(
       'https://www.eventbriteapi.com/v3/events/search/?location.address=Ottawa%2C+ON%2C+Canada&location.within=30km&expand=venue&sort_by=date&start_date.keyword=today',
-      { headers: { 'Authorization': `Bearer ${EVENTBRITE_KEY}` } }
+      { headers: { 'Authorization': `Bearer ${EVENTBRITE_KEY}` }, signal: AbortSignal.timeout(8000) }
     );
     if (!resp.ok) throw new Error(`Eventbrite ${resp.status}: ${await resp.text()}`);
     const data = await resp.json();

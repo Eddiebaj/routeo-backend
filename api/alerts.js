@@ -9,12 +9,14 @@ const https = require('https');
 // ── Shared helpers ───────────────────────────────────────────────
 function fetchUrl(url) {
   return new Promise((resolve, reject) => {
-    https.get(url, { headers: { 'User-Agent': 'RouteO/1.0' } }, (res) => {
+    const req = https.get(url, { headers: { 'User-Agent': 'RouteO/1.0' } }, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => resolve(data));
       res.on('error', reject);
-    }).on('error', reject);
+    });
+    req.on('error', reject);
+    req.setTimeout(8000, () => { req.destroy(); reject(new Error('timeout')); });
   });
 }
 

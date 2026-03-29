@@ -8,13 +8,14 @@ const https = require('https');
 const http = require('http');
 
 // ── Shared helpers ───────────────────────────────────────────────
-function fetchUrl(url, timeoutMs = 8000) {
+function fetchUrl(url, timeoutMs = 8000, redirectsLeft = 3) {
   return new Promise((resolve, reject) => {
     const mod = url.startsWith('https') ? https : http;
     const req = mod.get(url, { headers: { 'User-Agent': 'RouteO/1.0' } }, (res) => {
-      // Follow redirects
+      // Follow redirects (with depth limit)
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        return fetchUrl(res.headers.location, timeoutMs).then(resolve).catch(reject);
+        if (redirectsLeft <= 0) return reject(new Error('Too many redirects'));
+        return fetchUrl(res.headers.location, timeoutMs, redirectsLeft - 1).then(resolve).catch(reject);
       }
       let data = '';
       res.on('data', chunk => data += chunk);

@@ -47,9 +47,9 @@ function minsToTime(m) {
  * Weekday services typically contain schedule codes like 'JAN25-...-Weekday-01'.
  */
 function getDayType() {
-  const day = new Date().getDay();
-  if (day === 0) return 'Sunday';
-  if (day === 6) return 'Saturday';
+  const dayName = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Toronto', weekday: 'long' }).toLowerCase();
+  if (dayName === 'sunday') return 'Sunday';
+  if (dayName === 'saturday') return 'Saturday';
   return 'Weekday';
 }
 

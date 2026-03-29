@@ -31,6 +31,7 @@ async function fetchNRCanPrice() {
   const url = 'https://www2.nrcan.gc.ca/eneene/sources/pripri/prices_bycity_e.cfm?productID=1&locationID=66&frequency=D';
   const resp = await fetch(url, {
     headers: { 'User-Agent': 'RouteO/1.0 (Ottawa transit app)' },
+    signal: AbortSignal.timeout(8000),
   });
   if (!resp.ok) throw new Error(`NRCan HTTP ${resp.status}`);
   const html = await resp.text();
