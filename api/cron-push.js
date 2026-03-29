@@ -6,9 +6,10 @@
  *   - Game day alerts (noon if saved team plays tonight)
  *   - LRT disruption alerts (every 5 min, on new critical alerts)
  *
- * GET /api/cron-push?job=garbage   — garbage day reminders
+ * GET /api/cron-push?job=garbage    — garbage day reminders
  * GET /api/cron-push?job=gameday   — game day alerts
  * GET /api/cron-push?job=lrt       — LRT disruption push
+ * GET /api/cron-push?job=departures — arrival alerts for saved stops
  */
 
 const { createClient } = require('@supabase/supabase-js');
@@ -294,6 +295,126 @@ async function handleLrt() {
 }
 
 
+// ── Job: Departure / Arrival Alerts ──────────────────────────
+
+// Track recently notified arrivals to avoid duplicates (resets on cold start)
+const recentlyNotified = new Map(); // key → timestamp
+
+async function handleDepartures() {
+  // Get all devices subscribed to arrivalAlerts
+  const { data: subs } = await supabase
+    .from('push_subscriptions')
+    .select('device_id, metadata')
+    .eq('type', 'arrivalAlerts')
+    .eq('enabled', true);
+
+  if (!subs || subs.length === 0) return { job: 'departures', sent: 0, reason: 'no subscribers' };
+
+  // Build device_id → stop_ids map
+  const deviceStops = {};
+  const allStopIds = new Set();
+  for (const sub of subs) {
+    const stopIds = sub.metadata?.stop_ids || [];
+    if (stopIds.length === 0) continue;
+    deviceStops[sub.device_id] = stopIds;
+    stopIds.forEach(id => allStopIds.add(id));
+  }
+
+  if (allStopIds.size === 0) return { job: 'departures', sent: 0, reason: 'no stops configured' };
+
+  // Get tokens for subscribed devices
+  const deviceIds = Object.keys(deviceStops);
+  const { data: tokens } = await supabase
+    .from('push_tokens')
+    .select('expo_token, device_id, language')
+    .in('device_id', deviceIds);
+
+  if (!tokens || tokens.length === 0) return { job: 'departures', sent: 0, reason: 'no tokens' };
+
+  const tokenMap = {};
+  for (const t of tokens) {
+    tokenMap[t.device_id] = t;
+  }
+
+  // Fetch arrivals for each unique stop (deduplicated)
+  const stopArrivals = {};
+  const uniqueStops = [...allStopIds];
+
+  // Process stops in parallel batches of 5
+  for (let i = 0; i < uniqueStops.length; i += 5) {
+    const batch = uniqueStops.slice(i, i + 5);
+    const results = await Promise.allSettled(
+      batch.map(async (stopId) => {
+        const resp = await fetch(
+          `https://routeo-backend.vercel.app/api/arrivals?stop=${stopId}`,
+          { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8000) }
+        );
+        if (!resp.ok) return null;
+        const data = await resp.json();
+        return { stopId, arrivals: data.arrivals || [], stopName: data.stopName || stopId };
+      })
+    );
+    for (const r of results) {
+      if (r.status === 'fulfilled' && r.value) {
+        stopArrivals[r.value.stopId] = r.value;
+      }
+    }
+  }
+
+  // Build notifications
+  const messages = [];
+  const now = Date.now();
+
+  // Prune old entries from dedup cache (older than 10 min)
+  for (const [key, ts] of recentlyNotified) {
+    if (now - ts > 600000) recentlyNotified.delete(key);
+  }
+
+  for (const deviceId of deviceIds) {
+    const token = tokenMap[deviceId];
+    if (!token) continue;
+    const stops = deviceStops[deviceId] || [];
+    const isFr = token.language === 'fr';
+
+    for (const stopId of stops) {
+      const stopData = stopArrivals[stopId];
+      if (!stopData || !stopData.arrivals.length) continue;
+
+      for (const arr of stopData.arrivals.slice(0, 3)) {
+        if (arr.minsAway == null || arr.minsAway > 5 || arr.minsAway < 0) continue;
+
+        // Dedup key: device + stop + route + 5-min window
+        const window5 = Math.floor(now / 300000);
+        const dedupKey = `${deviceId}-${stopId}-${arr.routeId}-${window5}`;
+        if (recentlyNotified.has(dedupKey)) continue;
+        recentlyNotified.set(dedupKey, now);
+
+        const cleanStop = (stopData.stopName || '').replace(/\s*\(\d+\)$/, '');
+
+        messages.push({
+          to: token.expo_token,
+          sound: 'default',
+          title: isFr
+            ? `Route ${arr.routeId} dans ~${arr.minsAway} min`
+            : `Route ${arr.routeId} in ~${arr.minsAway} min`,
+          body: isFr
+            ? `${arr.headsign || ''} — ${cleanStop}`
+            : `${arr.headsign || ''} — ${cleanStop}`,
+          data: { type: 'arrival_alert', stopId, routeId: arr.routeId },
+        });
+
+        break; // One notification per stop per cycle
+      }
+    }
+  }
+
+  if (messages.length === 0) return { job: 'departures', sent: 0, reason: 'no imminent arrivals' };
+
+  const result = await sendExpoPush(messages);
+  return { job: 'departures', ...result, stopsChecked: uniqueStops.length };
+}
+
+
 // ── Handler ─────────────────────────────────────────────────────
 
 module.exports = async (req, res) => {
@@ -323,6 +444,10 @@ module.exports = async (req, res) => {
 
     if (job === 'lrt' || job === 'all') {
       results.lrt = await handleLrt();
+    }
+
+    if (job === 'departures' || job === 'all') {
+      results.departures = await handleDepartures();
     }
 
     return res.json({ ok: true, results, timestamp: new Date().toISOString() });

@@ -1,0 +1,29 @@
+name: Weekly STO GTFS Refresh
+
+on:
+  schedule:
+    - cron: '0 8 * * 1'  # 8am UTC Monday = 3am EST (after OC refresh)
+  workflow_dispatch:       # allows manual trigger from GitHub UI
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install @supabase/supabase-js adm-zip
+
+      - name: Run STO GTFS seed
+        env:
+          SUPABASE_URL: https://bzvkadttywgszovbowch.supabase.co
+          SUPABASE_KEY: sb_publishable_UQXeqJ_OE-Zhl51qrHVF3w_UXOxKk2O
+        run: node .github/workflows/seed-sto-gtfs.js

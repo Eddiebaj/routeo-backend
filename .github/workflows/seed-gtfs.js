@@ -65,7 +65,7 @@ async function main() {
     const c = tripLines[i].replace(/\r/g,'').split(',');
     if (!c[tId]) continue;
     tripsMap[c[tId]] = { routeId: c[tRoute]||'', headsign: c[tHead]||'', serviceId: c[tSvc]||'' };
-    tripRows.push({ trip_id:c[tId], route_id:c[tRoute]||'', headsign:c[tHead]||'', service_id:c[tSvc]||'' });
+    tripRows.push({ trip_id:c[tId], route_id:c[tRoute]||'', headsign:c[tHead]||'', service_id:c[tSvc]||'', agency:'OC' });
   }
   console.log(`  ${tripRows.length} trips parsed`);
 
@@ -92,7 +92,7 @@ async function main() {
     const c = stLines[i].replace(/\r/g,'').split(',');
     if (!c[sTrp]||!c[sStop]||!c[sTime]) continue;
     const t = tripsMap[c[sTrp]]||{};
-    stRows.push({ stop_id:c[sStop], trip_id:c[sTrp], arrival_time:c[sTime], route_id:t.routeId||'', headsign:t.headsign||'', service_id:t.serviceId||'' });
+    stRows.push({ stop_id:c[sStop], trip_id:c[sTrp], arrival_time:c[sTime], route_id:t.routeId||'', headsign:t.headsign||'', service_id:t.serviceId||'', agency:'OC' });
   }
   console.log(`  ${stRows.length} stop_times parsed`);
 
@@ -100,15 +100,15 @@ async function main() {
   console.log('Upserting stops (preserving amenity columns)...');
   await batchUpsertStops(stopRows);
 
-  // Clear and re-upload trips
-  console.log('Clearing trips...');
-  await supabase.from('trips').delete().neq('trip_id','');
+  // Clear and re-upload OC trips only (preserve STO data)
+  console.log('Clearing OC trips...');
+  await supabase.from('trips').delete().eq('agency', 'OC');
   console.log('Uploading trips...');
   await batchInsert('trips', tripRows);
 
-  // Clear and re-upload stop_times
-  console.log('Clearing stop_times...');
-  await supabase.from('stop_times').delete().neq('id', 0);
+  // Clear and re-upload OC stop_times only (preserve STO data)
+  console.log('Clearing OC stop_times...');
+  await supabase.from('stop_times').delete().eq('agency', 'OC');
   console.log('Uploading stop_times...');
   await batchInsert('stop_times', stRows);
 

@@ -176,6 +176,16 @@ function serviceMatchesToday(serviceId) {
   return serviceId.toLowerCase().includes(getTodayServiceKeyword());
 }
 
+function getYesterdayServiceKeyword() {
+  // For after-midnight trips: determine what service ran "yesterday" in Ottawa
+  const now = new Date();
+  const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const yDay = yesterday.toLocaleDateString('en-CA', { timeZone: 'America/Toronto', weekday: 'long' }).toLowerCase();
+  if (yDay === 'sunday') return 'sunday';
+  if (yDay === 'saturday') return 'saturday';
+  return 'weekday';
+}
+
 // ── Fetch OC Transpo GTFS-RT live predictions ──────────────────
 async function fetchRealtime(stopId) {
   const stopIds = MULTI_PLATFORM_STOPS[stopId] || [stopId];
@@ -332,7 +342,13 @@ async function fetchStatic(stopId) {
   const [h, m] = ottawaNow.split(':').map(Number);
   const currentMins = h * 60 + m;
   const maxMins = currentMins + 90;
-  console.log(`[fetchStatic] stopId=${stopId}, ottawaNow=${ottawaNow}, currentMins=${currentMins}, maxMins=${maxMins}`);
+  // After-midnight support: GTFS uses times like 25:30 for post-midnight trips
+  // belonging to the previous calendar day's service. If it's before 4 AM,
+  // also check the 24+ hour range (previous day's after-midnight trips).
+  const isAfterMidnight = h < 4;
+  const afterMidnightCurrentMins = isAfterMidnight ? currentMins + 1440 : 0; // e.g., 1:30 AM = 1470
+  const afterMidnightMaxMins = isAfterMidnight ? afterMidnightCurrentMins + 90 : 0;
+  console.log(`[fetchStatic] stopId=${stopId}, ottawaNow=${ottawaNow}, currentMins=${currentMins}, maxMins=${maxMins}${isAfterMidnight ? `, afterMidnight=${afterMidnightCurrentMins}-${afterMidnightMaxMins}` : ''}`);
 
   // Expand multi-platform stops (same as fetchRealtime)
   const stopIds = MULTI_PLATFORM_STOPS[stopId] || [stopId];
@@ -357,12 +373,26 @@ async function fetchStatic(stopId) {
   console.log(`[fetchStatic] raw rows for stop ${stopId} (${stopIds.length} platforms): ${(data || []).length}`);
 
   const allRows = (data || []).map(row => ({ ...row, mins: timeToMins(row.arrival_time) }));
-  const inWindow = allRows.filter(row => row.mins >= currentMins && row.mins <= maxMins);
+  // Normal window: e.g., 14:00-15:30 (currentMins to maxMins)
+  // After-midnight window: e.g., 1:30 AM = also check 25:30 (1470-1560) from previous day's service
+  const inWindow = allRows.filter(row =>
+    (row.mins >= currentMins && row.mins <= maxMins) ||
+    (isAfterMidnight && row.mins >= afterMidnightCurrentMins && row.mins <= afterMidnightMaxMins)
+  );
   console.log(`[fetchStatic] rows in time window: ${inWindow.length}`);
 
-  // Filter by today's service — do NOT fall back to wrong-day schedules
-  let finalRows = inWindow.filter(row => serviceMatchesToday(row.service_id));
-  console.log(`[fetchStatic] rows matching today's service: ${finalRows.length}`);
+  // Filter by service: normal-range trips match today's service,
+  // after-midnight trips (mins >= 1440) match yesterday's service
+  const todayKeyword = getTodayServiceKeyword();
+  const yesterdayKeyword = getYesterdayServiceKeyword();
+  let finalRows = inWindow.filter(row => {
+    if (row.mins >= 1440) {
+      // After-midnight trip from previous calendar day's schedule
+      return row.service_id ? row.service_id.toLowerCase().includes(yesterdayKeyword) : true;
+    }
+    return row.service_id ? row.service_id.toLowerCase().includes(todayKeyword) : true;
+  });
+  console.log(`[fetchStatic] rows matching service: ${finalRows.length}`);
 
   const tripIds = [...new Set(finalRows.map(r => r.trip_id).filter(Boolean))];
   let tripsMap = {};
@@ -403,7 +433,7 @@ async function fetchStatic(stopId) {
         tripId: row.trip_id,
         headsign: cleanHeadsign(trip.headsign || row.headsign || '', row.route_id),
         scheduledTime: row.arrival_time,
-        minsAway: row.mins - currentMins,
+        minsAway: (isAfterMidnight && row.mins >= 1440) ? row.mins - afterMidnightCurrentMins : row.mins - currentMins,
       };
     });
 }

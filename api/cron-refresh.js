@@ -67,7 +67,7 @@ module.exports = async (req, res) => {
       const serviceId = cols[serviceIdIdx] || '';
       if (!tripId) continue;
       tripsMap[tripId] = { routeId, headsign, serviceId };
-      tripRows.push({ trip_id: tripId, route_id: routeId, headsign, service_id: serviceId });
+      tripRows.push({ trip_id: tripId, route_id: routeId, headsign, service_id: serviceId, agency: 'OC' });
     }
 
     // ── Parse stop_times.txt ─────────────────────────────────────
@@ -95,16 +95,17 @@ module.exports = async (req, res) => {
         route_id:     trip.routeId   || '',
         headsign:     trip.headsign  || '',
         service_id:   trip.serviceId || '',
+        agency:       'OC',
       });
     }
 
-    // ── Truncate existing data (instant) ─────────────────────────
-    console.log('Truncating old data...');
-    const { error: truncateStopError } = await supabase.rpc('truncate_stop_times');
-    if (truncateStopError) throw new Error(`Truncate stop_times failed: ${truncateStopError.message}`);
+    // ── Clear existing OC data (preserve STO) ─────────────────────
+    console.log('Clearing OC data...');
+    const { error: delStopTimesErr } = await supabase.from('stop_times').delete().eq('agency', 'OC');
+    if (delStopTimesErr) throw new Error(`Delete OC stop_times failed: ${delStopTimesErr.message}`);
 
-    const { error: truncateTripError } = await supabase.rpc('truncate_trips');
-    if (truncateTripError) throw new Error(`Truncate trips failed: ${truncateTripError.message}`);
+    const { error: delTripsErr } = await supabase.from('trips').delete().eq('agency', 'OC');
+    if (delTripsErr) throw new Error(`Delete OC trips failed: ${delTripsErr.message}`);
 
     // ── Insert fresh data ─────────────────────────────────────────
     console.log(`Inserting ${tripRows.length} trips...`);
