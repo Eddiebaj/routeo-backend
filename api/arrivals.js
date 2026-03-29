@@ -353,23 +353,49 @@ async function fetchStatic(stopId) {
   // Expand multi-platform stops (same as fetchRealtime)
   const stopIds = MULTI_PLATFORM_STOPS[stopId] || [stopId];
 
+  // Build time range strings for server-side filtering (avoids 1000-row default limit)
+  const fmtTime = (mins) => {
+    const hh = String(Math.floor(mins / 60)).padStart(2, '0');
+    const mm = String(mins % 60).padStart(2, '0');
+    return `${hh}:${mm}:00`;
+  };
+  const timeFrom = fmtTime(currentMins);
+  const timeTo = fmtTime(maxMins);
+
   // Query each platform separately and merge (avoids slow .in() on large stop_times table)
   let allData = [];
   for (const sid of stopIds) {
+    // Primary time window query
     const { data: rows, error: err } = await supabase
       .from('stop_times')
       .select('arrival_time, route_id, headsign, service_id, trip_id, stop_id')
       .eq('stop_id', sid)
-      .order('arrival_time', { ascending: true });
+      .gte('arrival_time', timeFrom)
+      .lte('arrival_time', timeTo)
+      .order('arrival_time', { ascending: true })
+      .limit(200);
     if (err) throw new Error(err.message);
     if (rows) allData.push(...rows);
+
+    // After-midnight: also query 24+ hour range (e.g., 25:30-27:00)
+    if (isAfterMidnight) {
+      const amFrom = fmtTime(afterMidnightCurrentMins);
+      const amTo = fmtTime(afterMidnightMaxMins);
+      const { data: amRows, error: amErr } = await supabase
+        .from('stop_times')
+        .select('arrival_time, route_id, headsign, service_id, trip_id, stop_id')
+        .eq('stop_id', sid)
+        .gte('arrival_time', amFrom)
+        .lte('arrival_time', amTo)
+        .order('arrival_time', { ascending: true })
+        .limit(100);
+      if (!amErr && amRows) allData.push(...amRows);
+    }
   }
   // Sort merged results by arrival time
   allData.sort((a, b) => (a.arrival_time || '').localeCompare(b.arrival_time || ''));
   const data = allData;
-  const error = null;
 
-  if (error) throw new Error(error.message);
   console.log(`[fetchStatic] raw rows for stop ${stopId} (${stopIds.length} platforms): ${(data || []).length}`);
 
   const allRows = (data || []).map(row => ({ ...row, mins: timeToMins(row.arrival_time) }));
