@@ -87,13 +87,23 @@ module.exports = async (req, res) => {
 async function handleRouteDetail(res, routeId) {
   const dayType = getDayType();
 
-  // Query by route_id only (no time filter — arrival_time lacks an index and causes timeouts)
-  // Use limit to avoid massive result sets, then filter client-side by day type
-  const { data: stopTimes, error } = await supabase
-    .from('stop_times')
-    .select('stop_id, trip_id, arrival_time, headsign, service_id')
-    .eq('route_id', routeId)
-    .limit(800);
+  // Paginate by route_id (no time filter — arrival_time lacks an index and causes timeouts)
+  const PAGE_SIZE = 800;
+  let stopTimes = [];
+  let offset = 0;
+  let error = null;
+  for (let page = 0; page < 5; page++) { // max 4000 rows
+    const { data, error: err } = await supabase
+      .from('stop_times')
+      .select('stop_id, trip_id, arrival_time, headsign, service_id')
+      .eq('route_id', routeId)
+      .range(offset, offset + PAGE_SIZE - 1);
+    if (err) { error = err; break; }
+    if (!data || data.length === 0) break;
+    stopTimes.push(...data);
+    if (data.length < PAGE_SIZE) break; // last page
+    offset += PAGE_SIZE;
+  }
 
   if (error) throw new Error(error.message);
   if (!stopTimes || stopTimes.length === 0) {
