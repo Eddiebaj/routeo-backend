@@ -59,6 +59,18 @@ async function batchInsert(table, rows) {
   console.log();
 }
 
+async function batchUpsertTrips(rows) {
+  for (let i = 0; i < rows.length; i += BATCH) {
+    const { error } = await supabase.from('trips').upsert(rows.slice(i, i + BATCH), {
+      onConflict: 'trip_id',
+      ignoreDuplicates: false,
+    });
+    if (error) throw new Error(`trips upsert failed at ${i}: ${error.message}`);
+    process.stdout.write(`\r  trips: ${Math.min(i+BATCH, rows.length)}/${rows.length}`);
+  }
+  console.log();
+}
+
 async function batchUpsertStops(rows) {
   for (let i = 0; i < rows.length; i += BATCH) {
     const { error } = await supabase.from('stops').upsert(rows.slice(i, i + BATCH), {
@@ -156,8 +168,8 @@ async function main() {
   if (delSt) console.warn('  Warning deleting STO stop_times:', delSt.message);
 
   // Upload STO trips
-  console.log('Uploading STO trips...');
-  await batchInsert('trips', tripRows);
+  console.log('Upserting STO trips...');
+  await batchUpsertTrips(tripRows);
 
   // Upload STO stop_times
   console.log('Uploading STO stop_times...');

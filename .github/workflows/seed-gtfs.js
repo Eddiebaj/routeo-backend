@@ -36,6 +36,18 @@ async function batchInsert(table, rows) {
   console.log();
 }
 
+async function batchUpsertTrips(rows) {
+  for (let i = 0; i < rows.length; i += BATCH) {
+    const { error } = await supabase.from('trips').upsert(rows.slice(i, i + BATCH), {
+      onConflict: 'trip_id',
+      ignoreDuplicates: false,
+    });
+    if (error) throw new Error(`trips upsert failed at ${i}: ${error.message}`);
+    process.stdout.write(`\r  trips: ${Math.min(i+BATCH, rows.length)}/${rows.length}`);
+  }
+  console.log();
+}
+
 // Upsert stops: only update GTFS fields, never overwrite OSM amenity columns
 async function batchUpsertStops(rows) {
   for (let i = 0; i < rows.length; i += BATCH) {
@@ -103,8 +115,8 @@ async function main() {
   // Clear and re-upload OC trips only (preserve STO data)
   console.log('Clearing OC trips...');
   await supabase.from('trips').delete().eq('agency', 'OC');
-  console.log('Uploading trips...');
-  await batchInsert('trips', tripRows);
+  console.log('Upserting trips...');
+  await batchUpsertTrips(tripRows);
 
   // Clear and re-upload OC stop_times only (preserve STO data)
   console.log('Clearing OC stop_times...');
