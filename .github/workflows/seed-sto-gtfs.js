@@ -3,8 +3,8 @@ const AdmZip = require('adm-zip');
 const https = require('https');
 
 const supabase = createClient(
-  process.env.SUPABASE_URL || 'https://bzvkadttywgszovbowch.supabase.co',
-  process.env.SUPABASE_KEY || 'sb_publishable_UQXeqJ_OE-Zhl51qrHVF3w_UXOxKk2O'
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY
 );
 
 const STO_GTFS_URL = 'https://contenu.sto.ca/GTFS/GTFS.zip';

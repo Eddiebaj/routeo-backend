@@ -24,6 +24,6 @@ jobs:
 
       - name: Run STO GTFS seed
         env:
-          SUPABASE_URL: https://bzvkadttywgszovbowch.supabase.co
-          SUPABASE_KEY: sb_publishable_UQXeqJ_OE-Zhl51qrHVF3w_UXOxKk2O
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: node .github/workflows/seed-sto-gtfs.js

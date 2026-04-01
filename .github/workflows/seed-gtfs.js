@@ -3,8 +3,8 @@ const AdmZip = require('adm-zip');
 const https = require('https');
 
 const supabase = createClient(
-  process.env.SUPABASE_URL || 'https://bzvkadttywgszovbowch.supabase.co',
-  process.env.SUPABASE_KEY || 'sb_publishable_UQXeqJ_OE-Zhl51qrHVF3w_UXOxKk2O'
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY
 );
 
 const GTFS_URL = 'https://oct-gtfs-emasagcnfmcgeham.z01.azurefd.net/public-access/GTFSExport.zip';
