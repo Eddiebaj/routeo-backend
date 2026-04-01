@@ -2,14 +2,14 @@ const crypto = require('crypto');
 const GtfsRealtimeBindings = require('gtfs-realtime-bindings');
 
 // ── OC Transpo config ────────────────────────────────────────
-const OC_API_KEY = process.env.OC_TRANSPO_API_KEY || 'e85c07c79cfc45f1b429ce62dcfbab30';
+const OC_API_KEY = process.env.OC_TRANSPO_API_KEY;
 const TRIP_UPDATES_URL = 'https://nextrip-public-api.azure-api.net/octranspo/gtfs-rt-tp/beta/v1/TripUpdates?format=json';
 const STOPS_URL = 'https://raw.githubusercontent.com/Eddiebaj/routeo-backend/main/api/stops.txt';
 
 // ── STO config ───────────────────────────────────────────────
 const STO_HOST = 'https://gtfs.sto.ca/download.php';
-const STO_PUBLIC_KEY = process.env.STO_PUBLIC_KEY || '047BF16E296E977027D2D8374F8CEEC1';
-const STO_PRIVATE_KEY = process.env.STO_PRIVATE_KEY || '97F4D3FA7E2360C7201AB882CC7B841E45155C0C8608E2E7390A305DF6E5A94A';
+const STO_PUBLIC_KEY = process.env.STO_API_KEY;
+const STO_PRIVATE_KEY = process.env.STO_PRIVATE_KEY;
 
 let stopsCache = null;
 
@@ -80,7 +80,7 @@ async function fetchStoVehicles() {
       const lat = vp.position.latitude;
       const lng = vp.position.longitude;
 
-      if (!lat || !lng) continue;
+      if (lat == null || lng == null || isNaN(lat) || isNaN(lng)) continue;
 
       vehicles.push({
         id: `STO-${tripId || entity.id}`,
@@ -102,6 +102,7 @@ async function fetchStoVehicles() {
 
 // ── Fetch OC Transpo vehicles (JSON TripUpdates + interpolation) ──
 async function fetchOcVehicles(stopsMap, now, isDebug) {
+  if (!OC_API_KEY) { console.warn('OC_TRANSPO_API_KEY not set'); return { vehicles: [], debug: null }; }
   const tuResp = await fetch(TRIP_UPDATES_URL, {
     headers: { 'Ocp-Apim-Subscription-Key': OC_API_KEY },
     signal: AbortSignal.timeout(10000),

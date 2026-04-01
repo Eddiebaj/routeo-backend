@@ -42,28 +42,50 @@ export default async function handler(req, res) {
 
     // Nearby departures fallback: if transit mode returns 0 or only walk-only results,
     // retry with ±15 min departure windows to find routes OTP missed
+    let accessibilityWarning = false;
     if (isTransit && rawItineraries.length > 0) {
       const hasTransitLegs = rawItineraries.some(it => it.legs?.some(l => l.mode !== 'WALK'));
       if (!hasTransitLegs) {
-        const offsets = [15, -15]; // try 15min later, then 15min earlier
-        for (const offset of offsets) {
+        // Wheelchair fallback: if wheelchair=true produced walk-only results,
+        // retry without wheelchair param to get standard transit routes
+        if (wheelchair === 'true') {
           try {
-            const [h, m] = tripTime.split(':').map(Number);
-            const adjMin = h * 60 + m + offset;
-            const adjH = String(Math.floor(((adjMin % 1440) + 1440) % 1440 / 60)).padStart(2, '0');
-            const adjM = String(((adjMin % 60) + 60) % 60).padStart(2, '0');
-            const retryUrl = otpUrl.replace(`time=${encodeURIComponent(tripTime)}`, `time=${encodeURIComponent(`${adjH}:${adjM}`)}`);
-            const retryResp = await fetch(retryUrl, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8000) });
-            if (retryResp.ok) {
-              const retryData = await retryResp.json();
-              const retryItins = retryData?.plan?.itineraries || [];
-              const retryTransit = retryItins.filter(it => it.legs?.some(l => l.mode !== 'WALK'));
-              if (retryTransit.length > 0) {
-                rawItineraries = [...retryTransit, ...rawItineraries];
-                break;
+            const noWheelchairUrl = otpUrl.replace('&wheelchair=true', '');
+            const wcResp = await fetch(noWheelchairUrl, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(10000) });
+            if (wcResp.ok) {
+              const wcData = await wcResp.json();
+              const wcItins = wcData?.plan?.itineraries || [];
+              const wcTransit = wcItins.filter(it => it.legs?.some(l => l.mode !== 'WALK'));
+              if (wcTransit.length > 0) {
+                rawItineraries = [...wcTransit, ...rawItineraries];
+                accessibilityWarning = true;
               }
             }
-          } catch {}
+          } catch (e) { console.warn('Wheelchair fallback error:', e.message); }
+        }
+
+        // Time-offset fallback (try ±15 min)
+        if (!accessibilityWarning) {
+          const offsets = [15, -15];
+          for (const offset of offsets) {
+            try {
+              const [h, m] = tripTime.split(':').map(Number);
+              const adjMin = h * 60 + m + offset;
+              const adjH = String(Math.floor(((adjMin % 1440) + 1440) % 1440 / 60)).padStart(2, '0');
+              const adjM = String(((adjMin % 60) + 60) % 60).padStart(2, '0');
+              const retryUrl = otpUrl.replace(`time=${encodeURIComponent(tripTime)}`, `time=${encodeURIComponent(`${adjH}:${adjM}`)}`);
+              const retryResp = await fetch(retryUrl, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8000) });
+              if (retryResp.ok) {
+                const retryData = await retryResp.json();
+                const retryItins = retryData?.plan?.itineraries || [];
+                const retryTransit = retryItins.filter(it => it.legs?.some(l => l.mode !== 'WALK'));
+                if (retryTransit.length > 0) {
+                  rawItineraries = [...retryTransit, ...rawItineraries];
+                  break;
+                }
+              }
+            } catch (e) { console.warn('Time-offset fallback error:', e.message); }
+          }
         }
       }
     }
@@ -114,6 +136,7 @@ export default async function handler(req, res) {
       itineraries,
       from: { label: fromLabel || `${fromLat},${fromLng}`, lat: fromLat, lng: fromLng },
       to: { label: toLabel || `${toLat},${toLng}`, lat: toLat, lng: toLng },
+      ...(accessibilityWarning && { accessibilityWarning: true }),
     });
 
   } catch (err) {

@@ -327,7 +327,7 @@ async function handleRouteShape(res, routeId, agency) {
         console.log(`[shape] found extra OTP IDs for route ${bareId}: ${extraFeedIds.join(', ')}`);
       }
     }
-  } catch { /* ignore */ }
+  } catch (e) { console.warn('Extra feed ID lookup error:', e.message); }
 
   const allFeedIds = [...feedIds, ...extraFeedIds];
 

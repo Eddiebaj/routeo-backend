@@ -137,7 +137,7 @@ export default async function handler(req, res) {
                 return res.status(200).json({ results: [stopResult] });
               }
             }
-          } catch {}
+          } catch (e) { console.warn('Stop lookup error:', e.message); }
         }
 
         const [placesResp, geoResp] = await Promise.all([

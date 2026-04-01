@@ -1,19 +1,35 @@
 const { createClient } = require('@supabase/supabase-js');
 const GtfsRealtimeBindings = require('gtfs-realtime-bindings');
+const crypto = require('crypto');
 
 const supabase = createClient(
   'https://bzvkadttywgszovbowch.supabase.co',
   'sb_publishable_UQXeqJ_OE-Zhl51qrHVF3w_UXOxKk2O'
 );
 
-const OC_KEY = process.env.OC_TRANSPO_API_KEY || 'b08f2056bef846cf8a0d1487c59b6d74';
-const STO_KEY = process.env.STO_API_KEY || '047BF16E296E977027D2D8374F8CEEC1';
+const OC_KEY = process.env.OC_TRANSPO_API_KEY;
+const STO_PUBLIC_KEY = process.env.STO_API_KEY;
+const STO_PRIVATE_KEY = process.env.STO_PRIVATE_KEY;
 
 const AdmZip = require('adm-zip');
 
 const GTFS_RT_URL = 'https://nextrip-public-api.azure-api.net/octranspo/gtfs-rt-tu/beta/v1/TripUpdates?format=json';
-const STO_GTFS_RT_URL = 'https://www.sto.ca/sites/default/files/opendata/gtfs_rt/TripUpdates.pb';
-const STO_GTFS_ZIP_URL = 'https://www.sto.ca/sites/default/files/opendata/gtfs/google_transit.zip';
+const STO_GTFS_ZIP_URL = 'http://www.contenu.sto.ca/GTFS/GTFS.zip';
+
+// ── STO auth: SHA256(private_key + UTC timestamp) ────────────
+function buildStoUrl(fileType) {
+  if (!STO_PUBLIC_KEY || !STO_PRIVATE_KEY) return null;
+  const now = new Date();
+  const y = now.getUTCFullYear();
+  const mo = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(now.getUTCDate()).padStart(2, '0');
+  const h = String(now.getUTCHours()).padStart(2, '0');
+  const mi = String(now.getUTCMinutes()).padStart(2, '0');
+  const dateIso = `${y}${mo}${d}T${h}${mi}Z`;
+  const salted = STO_PRIVATE_KEY + dateIso;
+  const hash = crypto.createHash('sha256').update(salted, 'utf8').digest('hex').toUpperCase();
+  return `https://gtfs.sto.ca/download.php?hash=${hash}&file=${fileType}&key=${STO_PUBLIC_KEY}`;
+}
 
 // ── STO headsign lookup (cached in module scope, refreshed daily) ──
 let stoTripsMap = {};      // { [trip_id]: headsign }
@@ -188,6 +204,7 @@ function getYesterdayServiceKeyword() {
 
 // ── Fetch OC Transpo GTFS-RT live predictions ──────────────────
 async function fetchRealtime(stopId) {
+  if (!OC_KEY) { console.warn('OC_TRANSPO_API_KEY not set'); return []; }
   const stopIds = MULTI_PLATFORM_STOPS[stopId] || [stopId];
   const stopSet = new Set(stopIds.map(String));
 
@@ -265,8 +282,9 @@ async function fetchSTORealtime(stopId) {
   // Kick off trips map load in parallel with GTFS-RT fetch
   const tripsMapP = getSTOTripsMap();
 
-  const resp = await fetch(STO_GTFS_RT_URL, {
-    headers: { 'apikey': STO_KEY },
+  const stoUrl = buildStoUrl('trip');
+  if (!stoUrl) throw new Error('STO keys not configured');
+  const resp = await fetch(stoUrl, {
     signal: AbortSignal.timeout(8000),
   });
   if (!resp.ok) throw new Error(`STO GTFS-RT ${resp.status}`);
@@ -485,7 +503,7 @@ module.exports = async (req, res) => {
         const hoursAgo = (Date.now() - lastUpdated.getTime()) / (1000 * 60 * 60);
         if (hoursAgo > 48) dataWarning = 'Schedule data may be outdated';
       }
-    } catch {}
+    } catch (e) { console.warn('Freshness check error:', e.message); }
   })();
 
   // Look up stop name (best-effort, non-blocking) — try requested ID first, then platforms
@@ -500,7 +518,7 @@ module.exports = async (req, res) => {
         if (platRows?.[0]) stopName = platRows[0].stop_name;
       }
     }
-  } catch {}
+  } catch (e) { console.warn('Stop name lookup error:', e.message); }
 
   // ── Fetch ghost reports in parallel ────────────────────────
   let ghostReports = {};
