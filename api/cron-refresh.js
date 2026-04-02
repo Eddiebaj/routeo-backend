@@ -36,6 +36,43 @@ async function batchInsert(table, rows) {
   }
 }
 
+async function batchUpsert(table, rows, onConflict) {
+  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+    const batch = rows.slice(i, i + BATCH_SIZE);
+    const { error } = await supabase.from(table).upsert(batch, { onConflict });
+    if (error) throw new Error(`Upsert failed at row ${i} in ${table}: ${error.message}`);
+  }
+}
+
+async function seedStops(zip) {
+  console.log('Parsing stops.txt...');
+  const stopsRaw = zip.readAsText('stops.txt');
+  const lines = stopsRaw.trim().split('\n');
+  const headers = lines[0].replace(/\r/g, '').split(',');
+  const idIdx = headers.indexOf('stop_id');
+  const nameIdx = headers.indexOf('stop_name');
+  const latIdx = headers.indexOf('stop_lat');
+  const lonIdx = headers.indexOf('stop_lon');
+
+  const stopRows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].replace(/\r/g, '').split(',');
+    const stopId = cols[idIdx] || '';
+    if (!stopId) continue;
+    stopRows.push({
+      stop_id: stopId,
+      stop_name: cols[nameIdx] || '',
+      stop_lat: parseFloat(cols[latIdx]) || null,
+      stop_lon: parseFloat(cols[lonIdx]) || null,
+    });
+  }
+
+  console.log(`Upserting ${stopRows.length} stops...`);
+  await batchUpsert('stops', stopRows, 'stop_id');
+  console.log('Stops seeded.');
+  return stopRows.length;
+}
+
 module.exports = async (req, res) => {
   if (checkRateLimit(req, res)) return;
   const auth = req.headers['authorization'];
@@ -101,47 +138,33 @@ module.exports = async (req, res) => {
       });
     }
 
-    // ── Atomic swap: insert with temp tag, delete old, rename ─────
-    // Tag new rows as OC_TEMP so they don't conflict with live OC data
-    const tempTripRows = tripRows.map(r => ({ ...r, agency: 'OC_TEMP' }));
-    const tempStopTimeRows = stopTimeRows.map(r => ({ ...r, agency: 'OC_TEMP' }));
+    // ── Seed stops table (upsert — safe to run anytime) ──────────
+    const stopsCount = await seedStops(zip);
 
-    console.log(`Inserting ${tempTripRows.length} trips as OC_TEMP...`);
-    await batchInsert('trips', tempTripRows);
+    // If ?stopsOnly=1, skip the heavy trips/stop_times refresh
+    if (req.query.stopsOnly === '1') {
+      return res.json({ ok: true, stops: stopsCount, timestamp: new Date().toISOString() });
+    }
 
-    console.log(`Inserting ${tempStopTimeRows.length} stop_times as OC_TEMP...`);
-    await batchInsert('stop_times', tempStopTimeRows);
+    // ── Refresh trips and stop_times: delete old, insert new ─────
+    console.log('Deleting old OC stop_times...');
+    const { error: delStErr } = await supabase.from('stop_times').delete().eq('agency', 'OC');
+    if (delStErr) throw new Error(`Delete stop_times failed: ${delStErr.message}`);
 
-    // Non-atomic swap: rename OC → OC_OLD, then OC_TEMP → OC, then delete OC_OLD
-    // This ensures live data is always available (no window with zero rows)
+    console.log('Deleting old OC trips...');
+    const { error: delTripsErr } = await supabase.from('trips').delete().eq('agency', 'OC');
+    if (delTripsErr) throw new Error(`Delete trips failed: ${delTripsErr.message}`);
 
-    // Step 2: Rename existing OC → OC_OLD (existing rows still serve traffic during step 1)
-    console.log('Renaming OC to OC_OLD...');
-    const { error: oldTripsErr } = await supabase.from('trips').update({ agency: 'OC_OLD' }).eq('agency', 'OC');
-    if (oldTripsErr) throw new Error(`Rename trips OC→OC_OLD failed: ${oldTripsErr.message}`);
+    console.log(`Inserting ${tripRows.length} trips...`);
+    await batchInsert('trips', tripRows);
 
-    const { error: oldStErr } = await supabase.from('stop_times').update({ agency: 'OC_OLD' }).eq('agency', 'OC');
-    if (oldStErr) throw new Error(`Rename stop_times OC→OC_OLD failed: ${oldStErr.message}`);
-
-    // Step 3: Rename OC_TEMP → OC (new rows now serve traffic)
-    console.log('Renaming OC_TEMP to OC...');
-    const { error: renameTripsErr } = await supabase.from('trips').update({ agency: 'OC' }).eq('agency', 'OC_TEMP');
-    if (renameTripsErr) throw new Error(`Rename trips OC_TEMP→OC failed: ${renameTripsErr.message}`);
-
-    const { error: renameStErr } = await supabase.from('stop_times').update({ agency: 'OC' }).eq('agency', 'OC_TEMP');
-    if (renameStErr) throw new Error(`Rename stop_times OC_TEMP→OC failed: ${renameStErr.message}`);
-
-    // Step 4: Delete OC_OLD
-    console.log('Deleting OC_OLD data...');
-    const { error: delStopTimesErr } = await supabase.from('stop_times').delete().eq('agency', 'OC_OLD');
-    if (delStopTimesErr) throw new Error(`Delete OC_OLD stop_times failed: ${delStopTimesErr.message}`);
-
-    const { error: delTripsErr } = await supabase.from('trips').delete().eq('agency', 'OC_OLD');
-    if (delTripsErr) throw new Error(`Delete OC_OLD trips failed: ${delTripsErr.message}`);
+    console.log(`Inserting ${stopTimeRows.length} stop_times...`);
+    await batchInsert('stop_times', stopTimeRows);
 
     console.log('Done.');
     res.json({
       ok: true,
+      stops: stopsCount,
       stop_times: stopTimeRows.length,
       trips: tripRows.length,
       timestamp: new Date().toISOString(),
