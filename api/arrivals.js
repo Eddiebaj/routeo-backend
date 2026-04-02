@@ -1,10 +1,11 @@
+const { checkRateLimit } = require('./_rateLimit');
 const { createClient } = require('@supabase/supabase-js');
 const GtfsRealtimeBindings = require('gtfs-realtime-bindings');
 const crypto = require('crypto');
 
 const supabase = createClient(
-  'https://bzvkadttywgszovbowch.supabase.co',
-  'sb_publishable_UQXeqJ_OE-Zhl51qrHVF3w_UXOxKk2O'
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
 );
 
 const OC_KEY = process.env.OC_TRANSPO_API_KEY;
@@ -483,6 +484,7 @@ async function fetchStatic(stopId) {
 }
 
 module.exports = async (req, res) => {
+  if (checkRateLimit(req, res)) return;
   res.setHeader('Access-Control-Allow-Origin', '*');
 
   const rawStopId = req.query.stop || req.query.stopId;
@@ -557,19 +559,28 @@ module.exports = async (req, res) => {
   // ── STO stop flow ──────────────────────────────────────────
   if (isSTO) {
     try {
-      const stoArrivals = await fetchSTORealtime(stopId);
+      let stoArrivals = await fetchSTORealtime(stopId);
+      // Retry once after 2s if GTFS-RT returned empty
+      if (stoArrivals.length === 0) {
+        await new Promise(r => setTimeout(r, 2000));
+        stoArrivals = await fetchSTORealtime(stopId);
+        if (stoArrivals.length > 0) console.log(`[arrivals] STO GTFS-RT retry succeeded for stop ${stopId}`);
+      }
       if (stoArrivals.length > 0) {
         await Promise.all([ghostPromise, freshnessPromise]);
-        return res.json(buildResp({ stop: stopId, stopName, arrivals: stoArrivals, source: 'sto-gtfs-rt', agency: 'STO', ghostReports }));
+        const arrivals = stoArrivals.map(a => ({ ...a, source: 'sto-gtfs-rt' }));
+        return res.json(buildResp({ stop: stopId, stopName, arrivals, source: 'sto-gtfs-rt', agency: 'STO', ghostReports }));
       }
+      console.log(`[arrivals] STO GTFS-RT empty for stop ${stopId}, falling back to static`);
     } catch (err) {
-      console.error('STO GTFS-RT failed:', err.message);
+      console.warn(`[arrivals] STO GTFS-RT failed for stop ${stopId}:`, err.message);
     }
     // STO static fallback
     try {
       const staticArrivals = await fetchStatic(stopId);
+      const arrivals = staticArrivals.map(a => ({ ...a, source: 'gtfs-static' }));
       await Promise.all([ghostPromise, freshnessPromise]);
-      return res.json(buildResp({ stop: stopId, stopName, arrivals: staticArrivals, source: 'gtfs-static', agency: 'STO', ghostReports }));
+      return res.json(buildResp({ stop: stopId, stopName, arrivals, source: 'gtfs-static', agency: 'STO', ghostReports }));
     } catch (err) {
       return res.status(500).json({ error: err.message });
     }
@@ -577,19 +588,29 @@ module.exports = async (req, res) => {
 
   // ── OC Transpo stop flow ───────────────────────────────────
   try {
-    const rtArrivals = await fetchRealtime(stopId);
+    let rtArrivals = await fetchRealtime(stopId);
+    // Retry once after 2s if GTFS-RT returned empty (transient feed gap)
+    if (rtArrivals.length === 0) {
+      await new Promise(r => setTimeout(r, 2000));
+      rtArrivals = await fetchRealtime(stopId);
+      if (rtArrivals.length > 0) console.log(`[arrivals] GTFS-RT retry succeeded for stop ${stopId}`);
+    }
     if (rtArrivals.length > 0) {
       await Promise.all([ghostPromise, freshnessPromise]);
-      return res.json(buildResp({ stop: stopId, stopName, arrivals: rtArrivals, source: 'gtfs-rt', ghostReports }));
+      const arrivals = rtArrivals.map(a => ({ ...a, source: 'gtfs-rt' }));
+      return res.json(buildResp({ stop: stopId, stopName, arrivals, source: 'gtfs-rt', ghostReports }));
     }
-  } catch {
-    // GTFS-RT failed, fall through to static
+    console.log(`[arrivals] GTFS-RT empty for stop ${stopId}, falling back to static`);
+  } catch (err) {
+    console.warn(`[arrivals] GTFS-RT failed for stop ${stopId}:`, err.message);
+    // Fall through to static
   }
 
   try {
     const staticArrivals = await fetchStatic(stopId);
+    const arrivals = staticArrivals.map(a => ({ ...a, source: 'gtfs-static' }));
     await Promise.all([ghostPromise, freshnessPromise]);
-    return res.json(buildResp({ stop: stopId, stopName, arrivals: staticArrivals, source: 'gtfs-static', ghostReports }));
+    return res.json(buildResp({ stop: stopId, stopName, arrivals, source: 'gtfs-static', ghostReports }));
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }

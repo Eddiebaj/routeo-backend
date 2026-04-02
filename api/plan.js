@@ -1,10 +1,12 @@
 // api/plan.js — OTP trip planning proxy for RouteO
+import { checkRateLimit } from './_rateLimit.js';
 const OTP_BASE = 'https://routeo-otp-production.up.railway.app';
 const GOOGLE_KEY = process.env.GOOGLE_API_KEY;
 
 const GENERIC_NAMES = new Set(['path', 'sidewalk', 'footway', 'steps', 'pedestrian', 'service', 'track', 'cycleway', 'residential']);
 
 export default async function handler(req, res) {
+  if (checkRateLimit(req, res)) return;
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
 
@@ -149,6 +151,7 @@ export default async function handler(req, res) {
 async function enrichWalkSteps(from, to, otpSteps) {
   const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${from.lat},${from.lng}&destination=${to.lat},${to.lng}&mode=walking&key=${GOOGLE_KEY}`;
   const resp = await fetch(url, { signal: AbortSignal.timeout(5000) });
+  if (!resp.ok) return otpSteps;
   const data = await resp.json();
   const gSteps = data?.routes?.[0]?.legs?.[0]?.steps;
   if (!gSteps?.length) return otpSteps;

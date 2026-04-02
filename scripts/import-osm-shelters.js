@@ -18,8 +18,8 @@
 const { createClient } = require('@supabase/supabase-js');
 
 const supabase = createClient(
-  'https://bzvkadttywgszovbowch.supabase.co',
-  'sb_publishable_UQXeqJ_OE-Zhl51qrHVF3w_UXOxKk2O'
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
 );
 
 const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';

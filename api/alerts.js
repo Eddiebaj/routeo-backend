@@ -4,6 +4,7 @@
  * GET /api/alerts?action=lrt — OccasionalTransport.ca LRT station status
  */
 
+const { checkRateLimit } = require('./_rateLimit');
 const https = require('https');
 
 // ── Shared helpers ───────────────────────────────────────────────
@@ -229,6 +230,7 @@ async function handleLrt(res) {
 // Handler — routes by ?action=
 // ══════════════════════════════════════════════════════════════════
 module.exports = async (req, res) => {
+  if (checkRateLimit(req, res)) return;
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cache-Control', 's-maxage=300');
 

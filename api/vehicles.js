@@ -1,3 +1,4 @@
+const { checkRateLimit } = require('./_rateLimit');
 const crypto = require('crypto');
 const GtfsRealtimeBindings = require('gtfs-realtime-bindings');
 
@@ -181,6 +182,7 @@ async function fetchOcVehicles(stopsMap, now, isDebug) {
 
 // ── Main handler ─────────────────────────────────────────────
 module.exports = async (req, res) => {
+  if (checkRateLimit(req, res)) return;
   res.setHeader('Access-Control-Allow-Origin', '*');
 
   try {

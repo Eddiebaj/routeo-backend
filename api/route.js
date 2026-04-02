@@ -5,6 +5,7 @@
  * GET /api/route?id=95&action=shape   — route polyline shape from OTP
  */
 
+const { checkRateLimit } = require('./_rateLimit');
 const OTP_BASE = 'https://routeo-otp-production.up.railway.app';
 
 /** Decode Google encoded polyline string into [{latitude, longitude}] */
@@ -26,8 +27,8 @@ function decodePolyline(encoded) {
 const { createClient } = require('@supabase/supabase-js');
 
 const supabase = createClient(
-  'https://bzvkadttywgszovbowch.supabase.co',
-  'sb_publishable_UQXeqJ_OE-Zhl51qrHVF3w_UXOxKk2O'
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
 );
 
 function timeToMins(t) {
@@ -54,6 +55,7 @@ function getDayType() {
 }
 
 module.exports = async (req, res) => {
+  if (checkRateLimit(req, res)) return;
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cache-Control', 's-maxage=600');
 

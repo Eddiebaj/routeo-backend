@@ -1,3 +1,5 @@
+const { checkRateLimit } = require('./_rateLimit');
+
 /**
  * RouteO — Community & Push Notifications (multi-action endpoint)
  *
@@ -35,11 +37,16 @@
 const { createClient } = require('@supabase/supabase-js');
 
 const supabase = createClient(
-  'https://bzvkadttywgszovbowch.supabase.co',
-  'sb_publishable_UQXeqJ_OE-Zhl51qrHVF3w_UXOxKk2O'
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
 );
 
+function isValidDeviceId(id) {
+  return typeof id === 'string' && id.length >= 5 && id.length <= 200;
+}
+
 module.exports = async (req, res) => {
+  if (checkRateLimit(req, res)) return;
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -56,8 +63,11 @@ module.exports = async (req, res) => {
       case 'push.register': {
         if (req.method !== 'POST') return res.status(405).json({ error: 'POST required' });
         const { expo_token, device_id, platform, language } = req.body || {};
-        if (!expo_token || !device_id) {
-          return res.status(400).json({ error: 'Missing expo_token or device_id' });
+        if (!isValidDeviceId(device_id)) {
+          return res.status(400).json({ error: 'Valid device_id required' });
+        }
+        if (!expo_token) {
+          return res.status(400).json({ error: 'Missing expo_token' });
         }
 
         const { error } = await supabase
@@ -78,8 +88,11 @@ module.exports = async (req, res) => {
       case 'push.subscribe': {
         if (req.method !== 'POST') return res.status(405).json({ error: 'POST required' });
         const { device_id, subscriptions } = req.body || {};
-        if (!device_id || !Array.isArray(subscriptions)) {
-          return res.status(400).json({ error: 'Missing device_id or subscriptions array' });
+        if (!isValidDeviceId(device_id)) {
+          return res.status(400).json({ error: 'Valid device_id required' });
+        }
+        if (!Array.isArray(subscriptions)) {
+          return res.status(400).json({ error: 'Missing subscriptions array' });
         }
 
         // Upsert each subscription
@@ -101,7 +114,7 @@ module.exports = async (req, res) => {
       // ── Push: Check registration ────────────────────────────────
       case 'push.check': {
         const device_id = req.query.device_id;
-        if (!device_id) return res.status(400).json({ error: 'Missing device_id' });
+        if (!isValidDeviceId(device_id)) return res.status(400).json({ error: 'Valid device_id required' });
 
         const { data: token } = await supabase
           .from('push_tokens')
@@ -125,8 +138,11 @@ module.exports = async (req, res) => {
       case 'report': {
         if (req.method !== 'POST') return res.status(405).json({ error: 'POST required' });
         const { stop_id, category, description, device_id } = req.body || {};
-        if (!stop_id || !category || !device_id) {
-          return res.status(400).json({ error: 'Missing stop_id, category, or device_id' });
+        if (!isValidDeviceId(device_id)) {
+          return res.status(400).json({ error: 'Valid device_id required' });
+        }
+        if (!stop_id || !category) {
+          return res.status(400).json({ error: 'Missing stop_id or category' });
         }
 
         const validCategories = ['bench_broken', 'shelter_missing', 'accessibility', 'cleanliness', 'schedule_missing', 'other'];
@@ -223,8 +239,11 @@ module.exports = async (req, res) => {
       case 'deal.vote': {
         if (req.method !== 'POST') return res.status(405).json({ error: 'POST required' });
         const { deal_id, device_id, vote_type } = req.body || {};
-        if (!deal_id || !device_id || !['up', 'down'].includes(vote_type)) {
-          return res.status(400).json({ error: 'Missing deal_id, device_id, or invalid vote_type (up|down)' });
+        if (!isValidDeviceId(device_id)) {
+          return res.status(400).json({ error: 'Valid device_id required' });
+        }
+        if (!deal_id || !['up', 'down'].includes(vote_type)) {
+          return res.status(400).json({ error: 'Missing deal_id or invalid vote_type (up|down)' });
         }
 
         const { error } = await supabase
@@ -287,7 +306,8 @@ module.exports = async (req, res) => {
         }
 
         const ottawaNow = new Date().toLocaleTimeString('en-CA', { timeZone: 'America/Toronto', hour12: false });
-        const [crH] = ottawaNow.split(':').map(Number);
+        const crParts = ottawaNow.split(':').map(Number);
+        const crH = crParts.length > 0 && !isNaN(crParts[0]) ? crParts[0] : new Date().getUTCHours();
         const ottawaDay = new Date(new Date().toLocaleString('en-CA', { timeZone: 'America/Toronto' })).getDay();
         const { error } = await supabase.from('bus_crowding_reports').insert({
           route_id,
@@ -372,8 +392,11 @@ module.exports = async (req, res) => {
       case 'ghost.report': {
         if (req.method !== 'POST') return res.status(405).json({ error: 'POST required' });
         const { stop_id, route_id, report_type, notes, device_id } = req.body || {};
-        if (!stop_id || !route_id || !report_type || !device_id) {
-          return res.status(400).json({ error: 'Missing stop_id, route_id, report_type, or device_id' });
+        if (!isValidDeviceId(device_id)) {
+          return res.status(400).json({ error: 'Valid device_id required' });
+        }
+        if (!stop_id || !route_id || !report_type) {
+          return res.status(400).json({ error: 'Missing stop_id, route_id, or report_type' });
         }
         const validTypes = ['drove_past', 'out_of_service', 'never_showed', 'wrong_destination', 'confirmed_arrived'];
         if (!validTypes.includes(report_type)) {
@@ -443,7 +466,7 @@ module.exports = async (req, res) => {
       // ── Ghost bus: Weekly stats for a device ────────────────────
       case 'ghost.device_stats': {
         const device_id = req.query.device_id;
-        if (!device_id) return res.status(400).json({ error: 'Missing device_id' });
+        if (!isValidDeviceId(device_id)) return res.status(400).json({ error: 'Valid device_id required' });
 
         const oneWeekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 

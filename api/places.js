@@ -1,14 +1,23 @@
 // api/places.js — Combined Google API proxy
 // Actions: autocomplete, details, photo, nearby, geocode, autocomplete-geocode
+import { checkRateLimit } from './_rateLimit.js';
 import { createClient } from '@supabase/supabase-js';
 
 const GOOGLE_KEY = process.env.GOOGLE_API_KEY;
 const supabase = createClient(
-  process.env.SUPABASE_URL || 'https://bzvkadttywgszovbowch.supabase.co',
-  process.env.SUPABASE_KEY || 'sb_publishable_UQXeqJ_OE-Zhl51qrHVF3w_UXOxKk2O'
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
 );
 
+function sanitizeRadius(raw) {
+  if (raw == null || raw === '') return 1500;
+  const n = parseInt(raw, 10);
+  if (isNaN(n)) return 1500;
+  return Math.max(100, Math.min(50000, n));
+}
+
 export default async function handler(req, res) {
+  if (checkRateLimit(req, res)) return;
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
 
@@ -24,13 +33,14 @@ export default async function handler(req, res) {
         const params = new URLSearchParams({
           input,
           location: location || '45.4215,-75.6972',
-          radius: radius || '50000',
+          radius: String(sanitizeRadius(radius || '50000')),
           key: GOOGLE_KEY,
         });
         const resp = await fetch(
           `https://maps.googleapis.com/maps/api/place/autocomplete/json?${params}`,
           { signal: AbortSignal.timeout(5000) }
         );
+        if (!resp.ok) return res.status(502).json({ error: `Google API HTTP ${resp.status}` });
         return res.status(200).json(await resp.json());
       }
 
@@ -46,6 +56,7 @@ export default async function handler(req, res) {
           `https://maps.googleapis.com/maps/api/place/details/json?${params}`,
           { signal: AbortSignal.timeout(5000) }
         );
+        if (!resp.ok) return res.status(502).json({ error: `Google API HTTP ${resp.status}` });
         return res.status(200).json(await resp.json());
       }
 
@@ -74,7 +85,7 @@ export default async function handler(req, res) {
         if (!location) return res.status(400).json({ error: 'Missing location' });
         const params = new URLSearchParams({
           location,
-          radius: radius || '1500',
+          radius: String(sanitizeRadius(radius)),
           key: GOOGLE_KEY,
         });
         if (type) params.set('type', type);
@@ -82,6 +93,7 @@ export default async function handler(req, res) {
           `https://maps.googleapis.com/maps/api/place/nearbysearch/json?${params}`,
           { signal: AbortSignal.timeout(8000) }
         );
+        if (!resp.ok) return res.status(502).json({ error: `Google API HTTP ${resp.status}` });
         return res.status(200).json(await resp.json());
       }
 
@@ -90,12 +102,13 @@ export default async function handler(req, res) {
         if (!input) return res.status(400).json({ error: 'Missing input' });
         const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(input + ', Ottawa, ON')}&key=${GOOGLE_KEY}`;
         const resp = await fetch(url, { signal: AbortSignal.timeout(5000) });
+        if (!resp.ok) return res.status(502).json({ error: `Google API HTTP ${resp.status}` });
         const data = await resp.json();
         const results = (data.results || []).slice(0, 3).map(r => ({
           placeId: r.place_id,
           label: r.formatted_address,
-          lat: r.geometry.location.lat,
-          lng: r.geometry.location.lng,
+          lat: r.geometry?.location?.lat,
+          lng: r.geometry?.location?.lng,
         }));
         return res.status(200).json({ results });
       }
@@ -151,11 +164,16 @@ export default async function handler(req, res) {
           ),
         ]);
 
-        const [placesData, geoData] = await Promise.all([placesResp.json(), geoResp.json()]);
+        const [placesData, geoData] = await Promise.all([
+          placesResp.ok ? placesResp.json() : { predictions: [] },
+          geoResp.ok ? geoResp.json() : { results: [] },
+        ]);
 
         const coordMap = {};
         for (const r of (geoData.results || [])) {
-          coordMap[r.place_id] = { lat: r.geometry.location.lat, lng: r.geometry.location.lng, label: r.formatted_address };
+          if (r.geometry?.location) {
+            coordMap[r.place_id] = { lat: r.geometry.location.lat, lng: r.geometry.location.lng, label: r.formatted_address };
+          }
         }
 
         const predictions = (placesData.predictions || []).slice(0, 5);
@@ -176,7 +194,7 @@ export default async function handler(req, res) {
             fetch(
               `https://maps.googleapis.com/maps/api/place/details/json?place_id=${r.placeId}&fields=geometry&key=${GOOGLE_KEY}`,
               { signal: AbortSignal.timeout(3000) }
-            ).then(resp => resp.json()).then(data => {
+            ).then(resp => { if (!resp.ok) throw new Error(`HTTP ${resp.status}`); return resp.json(); }).then(data => {
               const loc = data.result?.geometry?.location;
               if (loc) { r.lat = loc.lat; r.lng = loc.lng; }
             }).catch(() => {})
@@ -186,7 +204,7 @@ export default async function handler(req, res) {
 
         const seen = new Set(results.map(r => r.placeId));
         for (const r of (geoData.results || []).slice(0, 2)) {
-          if (!seen.has(r.place_id)) {
+          if (!seen.has(r.place_id) && r.geometry?.location) {
             results.push({ placeId: r.place_id, label: r.formatted_address, lat: r.geometry.location.lat, lng: r.geometry.location.lng });
           }
         }

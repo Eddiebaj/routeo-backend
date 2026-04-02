@@ -1,8 +1,10 @@
 // api/gas.js — Ottawa gas price endpoint for RouteO backend
 // Uses NRCan daily pump price survey (free, no key required)
 // Falls back to GasBuddy scrape if NRCan is unavailable
+import { checkRateLimit } from './_rateLimit.js';
 
 export default async function handler(req, res) {
+  if (checkRateLimit(req, res)) return;
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
   res.setHeader('Cache-Control', 's-maxage=1800, stale-while-revalidate=3600'); // cache 30min

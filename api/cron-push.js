@@ -16,8 +16,8 @@ const { createClient } = require('@supabase/supabase-js');
 const https = require('https');
 
 const supabase = createClient(
-  'https://bzvkadttywgszovbowch.supabase.co',
-  'sb_publishable_UQXeqJ_OE-Zhl51qrHVF3w_UXOxKk2O'
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
 );
 
 // ── Shared helpers ──────────────────────────────────────────────

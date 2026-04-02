@@ -1,9 +1,10 @@
+const { checkRateLimit } = require('./_rateLimit');
 const { createClient } = require('@supabase/supabase-js');
 const AdmZip = require('adm-zip');
 
 const supabase = createClient(
-  'https://bzvkadttywgszovbowch.supabase.co',
-  'sb_publishable_UQXeqJ_OE-Zhl51qrHVF3w_UXOxKk2O'
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
 );
 
 const GTFS_URL = 'https://oct-gtfs-emasagcnfmcgeham.z01.azurefd.net/public-access/GTFSExport.zip';
@@ -36,6 +37,7 @@ async function batchInsert(table, rows) {
 }
 
 module.exports = async (req, res) => {
+  if (checkRateLimit(req, res)) return;
   const auth = req.headers['authorization'];
   if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
     return res.status(401).json({ error: 'Unauthorized' });
