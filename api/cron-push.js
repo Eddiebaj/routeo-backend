@@ -150,9 +150,10 @@ async function handleGarbage() {
   // Tomorrow's date in Ottawa timezone (ET)
   const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Toronto', year: 'numeric', month: '2-digit', day: '2-digit' });
   const todayOttawa = fmt.format(new Date());
-  const tomorrow = new Date(todayOttawa + 'T12:00:00');
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const tomorrowStr = fmt.format(tomorrow);
+  // Add one day by adding 86400000ms to a noon-UTC date
+  const todayNoon = new Date(todayOttawa + 'T12:00:00Z'); // force UTC
+  todayNoon.setUTCDate(todayNoon.getUTCDate() + 1);
+  const tomorrowStr = fmt.format(todayNoon);
 
   // Check if tomorrow is a collection day using Ottawa's ReCollect API
   // We need a place ID — use a known central Ottawa place for general reminders

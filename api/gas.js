@@ -3,6 +3,8 @@
 // Falls back to GasBuddy scrape if NRCan is unavailable
 import { checkRateLimit } from './_rateLimit.js';
 
+let cachedResult = null;
+
 export default async function handler(req, res) {
   if (checkRateLimit(req, res)) return;
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -11,7 +13,7 @@ export default async function handler(req, res) {
 
   try {
     const price = await fetchNRCanPrice();
-    return res.status(200).json({
+    const result = {
       price,
       city: 'Ottawa',
       currency: 'CAD',
@@ -19,9 +21,12 @@ export default async function handler(req, res) {
       source: 'NRCan',
       updated: new Date().toISOString().split('T')[0],
       stations: [], // station-level data not available from NRCan
-    });
+    };
+    cachedResult = { price, updated: new Date().toISOString() };
+    return res.status(200).json(result);
   } catch (err) {
     console.error('Gas price fetch failed:', err);
+    if (cachedResult) return res.status(200).json({ ...cachedResult, stale: true });
     return res.status(500).json({ error: 'Could not fetch gas prices' });
   }
 }

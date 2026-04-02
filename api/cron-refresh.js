@@ -112,21 +112,32 @@ module.exports = async (req, res) => {
     console.log(`Inserting ${tempStopTimeRows.length} stop_times as OC_TEMP...`);
     await batchInsert('stop_times', tempStopTimeRows);
 
-    // Delete old OC rows (OC_TEMP rows are already serving as backup)
-    console.log('Deleting old OC data...');
-    const { error: delStopTimesErr } = await supabase.from('stop_times').delete().eq('agency', 'OC');
-    if (delStopTimesErr) throw new Error(`Delete OC stop_times failed: ${delStopTimesErr.message}`);
+    // Non-atomic swap: rename OC → OC_OLD, then OC_TEMP → OC, then delete OC_OLD
+    // This ensures live data is always available (no window with zero rows)
 
-    const { error: delTripsErr } = await supabase.from('trips').delete().eq('agency', 'OC');
-    if (delTripsErr) throw new Error(`Delete OC trips failed: ${delTripsErr.message}`);
+    // Step 2: Rename existing OC → OC_OLD (existing rows still serve traffic during step 1)
+    console.log('Renaming OC to OC_OLD...');
+    const { error: oldTripsErr } = await supabase.from('trips').update({ agency: 'OC_OLD' }).eq('agency', 'OC');
+    if (oldTripsErr) throw new Error(`Rename trips OC→OC_OLD failed: ${oldTripsErr.message}`);
 
-    // Rename OC_TEMP → OC to go live
+    const { error: oldStErr } = await supabase.from('stop_times').update({ agency: 'OC_OLD' }).eq('agency', 'OC');
+    if (oldStErr) throw new Error(`Rename stop_times OC→OC_OLD failed: ${oldStErr.message}`);
+
+    // Step 3: Rename OC_TEMP → OC (new rows now serve traffic)
     console.log('Renaming OC_TEMP to OC...');
     const { error: renameTripsErr } = await supabase.from('trips').update({ agency: 'OC' }).eq('agency', 'OC_TEMP');
     if (renameTripsErr) throw new Error(`Rename trips OC_TEMP→OC failed: ${renameTripsErr.message}`);
 
     const { error: renameStErr } = await supabase.from('stop_times').update({ agency: 'OC' }).eq('agency', 'OC_TEMP');
     if (renameStErr) throw new Error(`Rename stop_times OC_TEMP→OC failed: ${renameStErr.message}`);
+
+    // Step 4: Delete OC_OLD
+    console.log('Deleting OC_OLD data...');
+    const { error: delStopTimesErr } = await supabase.from('stop_times').delete().eq('agency', 'OC_OLD');
+    if (delStopTimesErr) throw new Error(`Delete OC_OLD stop_times failed: ${delStopTimesErr.message}`);
+
+    const { error: delTripsErr } = await supabase.from('trips').delete().eq('agency', 'OC_OLD');
+    if (delTripsErr) throw new Error(`Delete OC_OLD trips failed: ${delTripsErr.message}`);
 
     console.log('Done.');
     res.json({

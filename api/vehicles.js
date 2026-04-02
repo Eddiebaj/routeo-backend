@@ -154,7 +154,7 @@ async function fetchOcVehicles(stopsMap, now, isDebug) {
     if (seen.has(key)) continue;
     seen.add(key);
 
-    const progress = Math.min(1, Math.max(0, (now - fromTime) / (toTime - fromTime)));
+    const progress = (toTime === fromTime) ? 0.5 : Math.min(1, Math.max(0, (now - fromTime) / (toTime - fromTime)));
 
     vehicles.push({
       id: tripId,
