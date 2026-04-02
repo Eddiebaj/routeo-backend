@@ -37,6 +37,19 @@ let stoTripsMap = {};      // { [trip_id]: headsign }
 let stoTripsLoadedAt = 0;  // timestamp of last load
 const STO_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
+function parseCSVLine(line) {
+  const fields = [];
+  let current = '';
+  let inQuotes = false;
+  for (const ch of line) {
+    if (ch === '"') { inQuotes = !inQuotes; }
+    else if (ch === ',' && !inQuotes) { fields.push(current); current = ''; }
+    else { current += ch; }
+  }
+  fields.push(current);
+  return fields;
+}
+
 async function getSTOTripsMap() {
   if (Object.keys(stoTripsMap).length > 0 && Date.now() - stoTripsLoadedAt < STO_CACHE_TTL) {
     return stoTripsMap;
@@ -49,13 +62,13 @@ async function getSTOTripsMap() {
     const tripsEntry = zip.getEntry('trips.txt');
     if (!tripsEntry) throw new Error('trips.txt not found in STO GTFS zip');
     const lines = tripsEntry.getData().toString('utf8').trim().split('\n');
-    const header = lines[0].replace(/\r/g, '').split(',');
+    const header = parseCSVLine(lines[0].replace(/\r/g, ''));
     const idxTripId = header.indexOf('trip_id');
     const idxHeadsign = header.indexOf('trip_headsign');
     if (idxTripId < 0) throw new Error('trip_id column not found');
     const map = {};
     for (let i = 1; i < lines.length; i++) {
-      const cols = lines[i].replace(/\r/g, '').split(',');
+      const cols = parseCSVLine(lines[i].replace(/\r/g, ''));
       if (!cols[idxTripId]) continue;
       map[cols[idxTripId]] = idxHeadsign >= 0 ? (cols[idxHeadsign] || '') : '';
     }
@@ -70,25 +83,18 @@ async function getSTOTripsMap() {
 }
 
 // ── STO stop detection ─────────────────────────────────────────
-// STO stop IDs are purely numeric and typically 5 digits starting with 1-5
-function isSTOStop(stopId) {
-  const id = String(stopId);
-  // OC Transpo stops are numeric (4-5 digits) or alphanumeric (e.g. EE995, NA998)
-  // STO stops are numeric 5-digit IDs in range 10000-59999
-  if (!/^\d+$/.test(id)) return false; // alphanumeric = OC Transpo LRT platform
-  const num = parseInt(id);
-  return num >= 10000 && num <= 59999 && !isOCTranspoNumericStop(id);
+// STO stops use alphanumeric IDs that start with letters (e.g. "AAAA", "STOP1")
+// OC Transpo stops are purely numeric (e.g. "3000", "9942") or alphanumeric LRT
+// platform codes (e.g. "NA998", "EE995") which are in MULTI_PLATFORM_STOPS
+function isStoStop(stopId) {
+  return /^[A-Za-z]/.test(String(stopId));
 }
 
-// OC Transpo numeric stops are generally under 15000 or specific known ranges
-// We identify STO by checking if the stop is NOT in OC Transpo's known ranges
-function isOCTranspoNumericStop(stopId) {
-  const num = parseInt(stopId);
-  // OC Transpo bus stops are typically 1000-14999
-  // STO stops are typically 15000-59999
-  // This is a best-effort heuristic — static GTFS seeding is the proper fix
-  if (num >= 1000 && num <= 14999) return true;
-  return false;
+function isSTOStop(stopId) {
+  const id = String(stopId);
+  // If it's in our multi-platform map, it's OC Transpo
+  if (MULTI_PLATFORM_STOPS[id]) return false;
+  return isStoStop(id);
 }
 
 // Multi-platform transit hub stops (e.g. Rideau Centre has platforms 9942-9948)

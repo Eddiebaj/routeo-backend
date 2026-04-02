@@ -39,7 +39,7 @@ async function batchInsert(table, rows) {
 module.exports = async (req, res) => {
   if (checkRateLimit(req, res)) return;
   const auth = req.headers['authorization'];
-  if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!process.env.CRON_SECRET || auth !== `Bearer ${process.env.CRON_SECRET}`) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
@@ -101,20 +101,32 @@ module.exports = async (req, res) => {
       });
     }
 
-    // ── Clear existing OC data (preserve STO) ─────────────────────
-    console.log('Clearing OC data...');
+    // ── Atomic swap: insert with temp tag, delete old, rename ─────
+    // Tag new rows as OC_TEMP so they don't conflict with live OC data
+    const tempTripRows = tripRows.map(r => ({ ...r, agency: 'OC_TEMP' }));
+    const tempStopTimeRows = stopTimeRows.map(r => ({ ...r, agency: 'OC_TEMP' }));
+
+    console.log(`Inserting ${tempTripRows.length} trips as OC_TEMP...`);
+    await batchInsert('trips', tempTripRows);
+
+    console.log(`Inserting ${tempStopTimeRows.length} stop_times as OC_TEMP...`);
+    await batchInsert('stop_times', tempStopTimeRows);
+
+    // Delete old OC rows (OC_TEMP rows are already serving as backup)
+    console.log('Deleting old OC data...');
     const { error: delStopTimesErr } = await supabase.from('stop_times').delete().eq('agency', 'OC');
     if (delStopTimesErr) throw new Error(`Delete OC stop_times failed: ${delStopTimesErr.message}`);
 
     const { error: delTripsErr } = await supabase.from('trips').delete().eq('agency', 'OC');
     if (delTripsErr) throw new Error(`Delete OC trips failed: ${delTripsErr.message}`);
 
-    // ── Insert fresh data ─────────────────────────────────────────
-    console.log(`Inserting ${tripRows.length} trips...`);
-    await batchInsert('trips', tripRows);
+    // Rename OC_TEMP → OC to go live
+    console.log('Renaming OC_TEMP to OC...');
+    const { error: renameTripsErr } = await supabase.from('trips').update({ agency: 'OC' }).eq('agency', 'OC_TEMP');
+    if (renameTripsErr) throw new Error(`Rename trips OC_TEMP→OC failed: ${renameTripsErr.message}`);
 
-    console.log(`Inserting ${stopTimeRows.length} stop_times...`);
-    await batchInsert('stop_times', stopTimeRows);
+    const { error: renameStErr } = await supabase.from('stop_times').update({ agency: 'OC' }).eq('agency', 'OC_TEMP');
+    if (renameStErr) throw new Error(`Rename stop_times OC_TEMP→OC failed: ${renameStErr.message}`);
 
     console.log('Done.');
     res.json({

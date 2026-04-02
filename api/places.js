@@ -73,7 +73,10 @@ export default async function handler(req, res) {
           { signal: AbortSignal.timeout(10000), redirect: 'follow' }
         );
         if (!resp.ok) return res.status(resp.status).json({ error: 'Photo fetch failed' });
-        const contentType = resp.headers.get('content-type') || 'image/jpeg';
+        const contentType = resp.headers.get('content-type') || '';
+        if (!contentType.startsWith('image/')) {
+          return res.status(400).json({ error: 'Invalid content type' });
+        }
         res.setHeader('Content-Type', contentType);
         res.setHeader('Cache-Control', 'public, max-age=86400');
         const buffer = Buffer.from(await resp.arrayBuffer());

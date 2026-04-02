@@ -16,7 +16,14 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Missing required parameters' });
   }
 
-  const tripDate = date || formatDate(new Date());
+  let tripDate = date;
+  if (!tripDate) {
+    const now = new Date();
+    const ottawaDate = now.toLocaleDateString('en-CA', { timeZone: 'America/Toronto' });
+    // ottawaDate is YYYY-MM-DD, reformat to MM-DD-YYYY for OTP
+    const [y, m, d] = ottawaDate.split('-');
+    tripDate = `${m}-${d}-${y}`;
+  }
   const tripTime = time || formatTime(new Date());
 
   // Map client mode to OTP mode string

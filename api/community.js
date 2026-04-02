@@ -144,6 +144,9 @@ module.exports = async (req, res) => {
         if (!stop_id || !category) {
           return res.status(400).json({ error: 'Missing stop_id or category' });
         }
+        if (description && description.length > 500) {
+          return res.status(400).json({ error: 'Description too long (max 500 chars)' });
+        }
 
         const validCategories = ['bench_broken', 'shelter_missing', 'accessibility', 'cleanliness', 'schedule_missing', 'other'];
         if (!validCategories.includes(category)) {
@@ -301,8 +304,9 @@ module.exports = async (req, res) => {
         if (!route_id || !stop_id || crowding_level == null) {
           return res.status(400).json({ error: 'route_id, stop_id, and crowding_level are required' });
         }
-        if (crowding_level < 0 || crowding_level > 3) {
-          return res.status(400).json({ error: 'crowding_level must be 0-3' });
+        const level = parseInt(crowding_level, 10);
+        if (isNaN(level) || level < 1 || level > 5) {
+          return res.status(400).json({ error: 'crowding_level must be 1-5' });
         }
 
         const ottawaNow = new Date().toLocaleTimeString('en-CA', { timeZone: 'America/Toronto', hour12: false });
@@ -314,7 +318,7 @@ module.exports = async (req, res) => {
           stop_id,
           direction_id: direction_id || null,
           vehicle_id: vehicle_id || null,
-          crowding_level,
+          crowding_level: level,
           hour_of_day: crH,
           day_of_week: ottawaDay,
         });

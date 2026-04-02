@@ -11,6 +11,10 @@
       "schedule": "0 23 * * *"
     },
     {
+      "path": "/api/cron-push?job=garbage",
+      "schedule": "0 0 * * *"
+    },
+    {
       "path": "/api/cron-push?job=gameday",
       "schedule": "0 17 * * *"
     },

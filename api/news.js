@@ -72,25 +72,32 @@ function stripHtml(html) {
     .trim();
 }
 
+function sanitizeUrl(url) {
+  if (!url) return null;
+  const trimmed = url.trim();
+  if (trimmed.startsWith('https://') || trimmed.startsWith('http://')) return trimmed;
+  return null;
+}
+
 function extractThumbnail(itemXml) {
   // Try media:content url
   const mc = itemXml.match(/<media:content[^>]+url="([^"]+)"/);
-  if (mc) return mc[1];
+  if (mc) { const u = sanitizeUrl(mc[1]); if (u) return u; }
   // Try media:thumbnail url
   const mt = itemXml.match(/<media:thumbnail[^>]+url="([^"]+)"/);
-  if (mt) return mt[1];
+  if (mt) { const u = sanitizeUrl(mt[1]); if (u) return u; }
   // Try enclosure url (image types only)
   const enc = itemXml.match(/<enclosure[^>]+url="([^"]+)"[^>]+type="image/);
-  if (enc) return enc[1];
+  if (enc) { const u = sanitizeUrl(enc[1]); if (u) return u; }
   // Try enclosure url without type check
   const enc2 = itemXml.match(/<enclosure[^>]+url="([^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"/i);
-  if (enc2) return enc2[1];
+  if (enc2) { const u = sanitizeUrl(enc2[1]); if (u) return u; }
   // Try img src in description/content
   const img = itemXml.match(/<img[^>]+src="(https?:\/\/[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"/i);
-  if (img) return img[1];
+  if (img) { const u = sanitizeUrl(img[1]); if (u) return u; }
   // Try image tag (Atom feeds)
   const imgTag = itemXml.match(/<image[^>]*>([^<]+)<\/image>/);
-  if (imgTag && imgTag[1].startsWith('http')) return imgTag[1].trim();
+  if (imgTag) { const u = sanitizeUrl(imgTag[1]); if (u) return u; }
   return '';
 }
 

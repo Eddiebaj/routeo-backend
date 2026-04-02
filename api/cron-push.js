@@ -56,11 +56,13 @@ async function sendExpoPush(messages) {
   const BATCH = 100;
   let totalSent = 0;
 
+  const invalidTokens = [];
+
   for (let i = 0; i < messages.length; i += BATCH) {
     const batch = messages.slice(i, i + BATCH);
     const body = JSON.stringify(batch);
 
-    await new Promise((resolve, reject) => {
+    const responseText = await new Promise((resolve, reject) => {
       const req = https.request({
         hostname: 'exp.host',
         path: '/--/api/v2/push/send',
@@ -81,10 +83,38 @@ async function sendExpoPush(messages) {
       req.end();
     });
 
+    // Parse response to find DeviceNotRegistered errors
+    try {
+      const parsed = JSON.parse(responseText);
+      const tickets = parsed.data || [];
+      for (let j = 0; j < tickets.length; j++) {
+        const ticket = tickets[j];
+        if (ticket.details && ticket.details.error === 'DeviceNotRegistered') {
+          const token = batch[j] && batch[j].to;
+          if (token) invalidTokens.push(token);
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to parse Expo push response:', e.message);
+    }
+
     totalSent += batch.length;
   }
 
-  return { sent: totalSent };
+  // Clean up invalid tokens from Supabase
+  if (invalidTokens.length > 0) {
+    try {
+      await supabase
+        .from('push_tokens')
+        .delete()
+        .in('expo_token', invalidTokens);
+      console.log(`Cleaned up ${invalidTokens.length} invalid push tokens`);
+    } catch (e) {
+      console.warn('Failed to clean up invalid tokens:', e.message);
+    }
+  }
+
+  return { sent: totalSent, invalidTokensCleaned: invalidTokens.length };
 }
 
 /**
@@ -118,12 +148,11 @@ async function handleGarbage() {
   if (!tokens.length) return { job: 'garbage', sent: 0, reason: 'no subscribers' };
 
   // Tomorrow's date in Ottawa timezone (ET)
-  const now = new Date();
-  const etOffset = now.toLocaleString('en-US', { timeZone: 'America/Toronto' });
-  const etNow = new Date(etOffset);
-  const tomorrow = new Date(etNow);
+  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Toronto', year: 'numeric', month: '2-digit', day: '2-digit' });
+  const todayOttawa = fmt.format(new Date());
+  const tomorrow = new Date(todayOttawa + 'T12:00:00');
   tomorrow.setDate(tomorrow.getDate() + 1);
-  const tomorrowStr = tomorrow.toLocaleDateString('en-CA'); // YYYY-MM-DD
+  const tomorrowStr = fmt.format(tomorrow);
 
   // Check if tomorrow is a collection day using Ottawa's ReCollect API
   // We need a place ID — use a known central Ottawa place for general reminders
@@ -165,7 +194,7 @@ async function handleGameDay() {
   try {
     const nhlData = await fetchJson('https://api-web.nhle.com/v1/schedule/now');
     const gameWeek = nhlData.gameWeek || [];
-    const today = new Date().toLocaleDateString('en-CA');
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Toronto' });
 
     for (const day of gameWeek) {
       if (day.date === today) {
@@ -347,7 +376,7 @@ async function handleDepartures() {
       batch.map(async (stopId) => {
         const resp = await fetch(
           `https://routeo-backend.vercel.app/api/arrivals?stop=${stopId}`,
-          { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8000) }
+          { headers: { Accept: 'application/json', 'x-internal': '1', Authorization: `Bearer ${process.env.CRON_SECRET}` }, signal: AbortSignal.timeout(8000) }
         );
         if (!resp.ok) return null;
         const data = await resp.json();
@@ -422,10 +451,7 @@ module.exports = async (req, res) => {
 
   // Verify cron secret for scheduled invocations
   const auth = req.headers['authorization'];
-  const isCron = auth === `Bearer ${process.env.CRON_SECRET}`;
-
-  // Allow manual trigger without auth in dev, but require auth in prod
-  if (!isCron && process.env.NODE_ENV === 'production') {
+  if (!process.env.CRON_SECRET || auth !== `Bearer ${process.env.CRON_SECRET}`) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
