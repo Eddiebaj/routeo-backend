@@ -80,6 +80,8 @@ module.exports = async (req, res) => {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
+  res.setHeader('Cache-Control', 'no-store');
+
   try {
     console.log('Downloading GTFS zip...');
     const buffer = await downloadBuffer(GTFS_URL);
@@ -146,17 +148,17 @@ module.exports = async (req, res) => {
       return res.json({ ok: true, stops: stopsCount, timestamp: new Date().toISOString() });
     }
 
-    // ── Refresh trips and stop_times: delete old, insert new ─────
+    // ── Refresh trips and stop_times ──────────────────────────────
+    // Trips: upsert with onConflict to avoid delete+insert gap
+    console.log(`Upserting ${tripRows.length} trips...`);
+    await batchUpsert('trips', tripRows, 'trip_id');
+
+    // stop_times: no single unique key, so we must delete+insert.
+    // Trade-off: there is a brief window where arrivals may return empty.
+    // This cron runs at off-peak hours (4 AM ET) to minimize impact.
     console.log('Deleting old OC stop_times...');
     const { error: delStErr } = await supabase.from('stop_times').delete().eq('agency', 'OC');
     if (delStErr) throw new Error(`Delete stop_times failed: ${delStErr.message}`);
-
-    console.log('Deleting old OC trips...');
-    const { error: delTripsErr } = await supabase.from('trips').delete().eq('agency', 'OC');
-    if (delTripsErr) throw new Error(`Delete trips failed: ${delTripsErr.message}`);
-
-    console.log(`Inserting ${tripRows.length} trips...`);
-    await batchInsert('trips', tripRows);
 
     console.log(`Inserting ${stopTimeRows.length} stop_times...`);
     await batchInsert('stop_times', stopTimeRows);
@@ -172,6 +174,6 @@ module.exports = async (req, res) => {
 
   } catch (err) {
     console.error('Cron error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 };

@@ -187,7 +187,8 @@ module.exports = async (req, res) => {
 
   try {
     const now = Math.floor(Date.now() / 1000);
-    const isDebug = req.query.debug === '1';
+    const auth = req.headers['authorization'];
+    const isDebug = req.query.debug === '1' && process.env.CRON_SECRET && auth === `Bearer ${process.env.CRON_SECRET}`;
 
     // Fetch OC Transpo + STO in parallel
     const [stopsMap, stoVehicles] = await Promise.all([
@@ -225,6 +226,6 @@ module.exports = async (req, res) => {
     res.json(resp);
   } catch (err) {
     console.error('vehicles error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 };

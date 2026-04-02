@@ -79,7 +79,7 @@ module.exports = async (req, res) => {
     return await handleRouteDetail(res, routeId);
   } catch (err) {
     console.error('Route API error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 };
 

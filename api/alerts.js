@@ -8,11 +8,18 @@ const { checkRateLimit } = require('./_rateLimit');
 const https = require('https');
 
 // ── Shared helpers ───────────────────────────────────────────────
+const MAX_RESPONSE_BYTES = 2 * 1024 * 1024; // 2MB
+
 function fetchUrl(url) {
   return new Promise((resolve, reject) => {
     const req = https.get(url, { headers: { 'User-Agent': 'RouteO/1.0' } }, (res) => {
       let data = '';
-      res.on('data', chunk => data += chunk);
+      let bytes = 0;
+      res.on('data', chunk => {
+        bytes += chunk.length;
+        if (bytes > MAX_RESPONSE_BYTES) { req.destroy(); return reject(new Error('Response body too large')); }
+        data += chunk;
+      });
       res.on('end', () => resolve(data));
       res.on('error', reject);
     });
@@ -242,6 +249,6 @@ module.exports = async (req, res) => {
   } catch (err) {
     console.error('Alerts/LRT error:', err);
     if (req.query.action === 'lrt' && lrtCache) return res.status(200).json(lrtCache);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 };

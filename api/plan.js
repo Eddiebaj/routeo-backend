@@ -1,11 +1,11 @@
 // api/plan.js — OTP trip planning proxy for RouteO
-import { checkRateLimit } from './_rateLimit.js';
+const { checkRateLimit } = require('./_rateLimit');
 const OTP_BASE = 'https://routeo-otp-production.up.railway.app';
 const GOOGLE_KEY = process.env.GOOGLE_API_KEY;
 
 const GENERIC_NAMES = new Set(['path', 'sidewalk', 'footway', 'steps', 'pedestrian', 'service', 'track', 'cycleway', 'residential']);
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   if (checkRateLimit(req, res)) return;
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
@@ -14,6 +14,9 @@ export default async function handler(req, res) {
 
   if (!fromLat || !fromLng || !toLat || !toLng) {
     return res.status(400).json({ error: 'Missing required parameters' });
+  }
+  if (isNaN(parseFloat(fromLat)) || isNaN(parseFloat(fromLng)) || isNaN(parseFloat(toLat)) || isNaN(parseFloat(toLng))) {
+    return res.status(400).json({ error: 'Invalid coordinates' });
   }
 
   let tripDate = date;
@@ -44,7 +47,8 @@ export default async function handler(req, res) {
     const otpResp = await fetch(otpUrl, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(15000) });
     if (!otpResp.ok) {
       const text = await otpResp.text();
-      return res.status(502).json({ error: 'OTP returned an error', detail: text });
+      console.error('OTP error response:', text);
+      return res.status(502).json({ error: 'OTP returned an error' });
     }
     const data = await otpResp.json();
     let rawItineraries = data?.plan?.itineraries || [];
@@ -151,7 +155,7 @@ export default async function handler(req, res) {
   } catch (err) {
     console.error('Plan fetch error:', err);
     if (err.name === 'TimeoutError') return res.status(504).json({ error: 'OTP request timed out' });
-    return res.status(500).json({ error: 'Internal error', detail: err.message });
+    return res.status(500).json({ error: 'Internal server error' });
   }
 }
 

@@ -9,6 +9,8 @@ const https = require('https');
 const http = require('http');
 
 // ── Shared helpers ───────────────────────────────────────────────
+const MAX_RESPONSE_BYTES = 2 * 1024 * 1024; // 2MB
+
 function fetchUrl(url, timeoutMs = 8000, redirectsLeft = 3) {
   return new Promise((resolve, reject) => {
     const mod = url.startsWith('https') ? https : http;
@@ -25,7 +27,12 @@ function fetchUrl(url, timeoutMs = 8000, redirectsLeft = 3) {
         return fetchUrl(nextUrl, timeoutMs, redirectsLeft - 1).then(resolve).catch(reject);
       }
       let data = '';
-      res.on('data', chunk => data += chunk);
+      let bytes = 0;
+      res.on('data', chunk => {
+        bytes += chunk.length;
+        if (bytes > MAX_RESPONSE_BYTES) { req.destroy(); return reject(new Error('Response body too large')); }
+        data += chunk;
+      });
       res.on('end', () => resolve(data));
       res.on('error', reject);
     });
@@ -211,6 +218,6 @@ module.exports = async (req, res) => {
   } catch (err) {
     console.error('News feed error:', err);
     if (cache) return res.json(cache);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 };

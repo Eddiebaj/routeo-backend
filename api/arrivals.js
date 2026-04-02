@@ -15,7 +15,7 @@ const STO_PRIVATE_KEY = process.env.STO_PRIVATE_KEY;
 const AdmZip = require('adm-zip');
 
 const GTFS_RT_URL = 'https://nextrip-public-api.azure-api.net/octranspo/gtfs-rt-tu/beta/v1/TripUpdates?format=json';
-const STO_GTFS_ZIP_URL = 'http://www.contenu.sto.ca/GTFS/GTFS.zip';
+const STO_GTFS_ZIP_URL = 'https://www.contenu.sto.ca/GTFS/GTFS.zip';
 
 // ── STO auth: SHA256(private_key + UTC timestamp) ────────────
 function buildStoUrl(fileType) {
@@ -588,7 +588,7 @@ module.exports = async (req, res) => {
       await Promise.all([ghostPromise, freshnessPromise]);
       return res.json(buildResp({ stop: stopId, stopName, arrivals, source: 'gtfs-static', agency: 'STO', ghostReports }));
     } catch (err) {
-      return res.status(500).json({ error: err.message });
+      return res.status(500).json({ error: 'Internal server error' });
     }
   }
 
@@ -618,6 +618,6 @@ module.exports = async (req, res) => {
     await Promise.all([ghostPromise, freshnessPromise]);
     return res.json(buildResp({ stop: stopId, stopName, arrivals, source: 'gtfs-static', ghostReports }));
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: 'Internal server error' });
   }
 };

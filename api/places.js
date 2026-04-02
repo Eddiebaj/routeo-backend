@@ -1,9 +1,10 @@
 // api/places.js — Combined Google API proxy
 // Actions: autocomplete, details, photo, nearby, geocode, autocomplete-geocode
-import { checkRateLimit } from './_rateLimit.js';
-import { createClient } from '@supabase/supabase-js';
+const { checkRateLimit } = require('./_rateLimit');
+const { createClient } = require('@supabase/supabase-js');
 
 const GOOGLE_KEY = process.env.GOOGLE_API_KEY;
+const ALLOWED_HOSTS = ['maps.googleapis.com', 'lh3.googleusercontent.com'];
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
@@ -16,7 +17,7 @@ function sanitizeRadius(raw) {
   return Math.max(100, Math.min(50000, n));
 }
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   if (checkRateLimit(req, res)) return;
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
@@ -68,8 +69,15 @@ export default async function handler(req, res) {
           maxwidth: maxwidth || '400',
           key: GOOGLE_KEY,
         });
+        const photoUrl = `https://maps.googleapis.com/maps/api/place/photo?${params}`;
+        try {
+          const u = new URL(photoUrl);
+          if (!ALLOWED_HOSTS.includes(u.hostname)) return res.status(400).json({ error: 'Invalid URL host' });
+        } catch {
+          return res.status(400).json({ error: 'Invalid URL' });
+        }
         const resp = await fetch(
-          `https://maps.googleapis.com/maps/api/place/photo?${params}`,
+          photoUrl,
           { signal: AbortSignal.timeout(10000), redirect: 'follow' }
         );
         if (!resp.ok) return res.status(resp.status).json({ error: 'Photo fetch failed' });
@@ -220,6 +228,6 @@ export default async function handler(req, res) {
     }
   } catch (err) {
     console.error(`Places ${action} error:`, err);
-    return res.status(500).json({ error: `${action} failed`, detail: err.message });
+    return res.status(500).json({ error: 'Internal server error' });
   }
 }

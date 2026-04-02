@@ -45,6 +45,17 @@ function isValidDeviceId(id) {
   return typeof id === 'string' && id.length >= 5 && id.length <= 200;
 }
 
+const sanitize = (s) => String(s).replace(/[<>]/g, '');
+
+const deviceCooldowns = new Map();
+function checkDeviceCooldown(deviceId, action, cooldownMs = 5000) {
+  const key = `${deviceId}:${action}`;
+  const last = deviceCooldowns.get(key);
+  if (last && Date.now() - last < cooldownMs) return true;
+  deviceCooldowns.set(key, Date.now());
+  return false;
+}
+
 module.exports = async (req, res) => {
   if (checkRateLimit(req, res)) return;
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -91,8 +102,8 @@ module.exports = async (req, res) => {
         if (!isValidDeviceId(device_id)) {
           return res.status(400).json({ error: 'Valid device_id required' });
         }
-        if (!Array.isArray(subscriptions)) {
-          return res.status(400).json({ error: 'Missing subscriptions array' });
+        if (!Array.isArray(subscriptions) || subscriptions.length > 50) {
+          return res.status(400).json({ error: 'Invalid subscriptions' });
         }
 
         // Upsert each subscription
@@ -118,7 +129,7 @@ module.exports = async (req, res) => {
 
         const { data: token } = await supabase
           .from('push_tokens')
-          .select('expo_token, updated_at')
+          .select('updated_at')
           .eq('device_id', device_id)
           .single();
 
@@ -129,7 +140,6 @@ module.exports = async (req, res) => {
 
         return res.json({
           registered: !!token,
-          token: token?.expo_token || null,
           subscriptions: subs || [],
         });
       }
@@ -140,6 +150,9 @@ module.exports = async (req, res) => {
         const { stop_id, category, description, device_id } = req.body || {};
         if (!isValidDeviceId(device_id)) {
           return res.status(400).json({ error: 'Valid device_id required' });
+        }
+        if (checkDeviceCooldown(device_id, 'report')) {
+          return res.status(429).json({ error: 'Too many requests, please wait' });
         }
         if (!stop_id || !category) {
           return res.status(400).json({ error: 'Missing stop_id or category' });
@@ -155,7 +168,7 @@ module.exports = async (req, res) => {
 
         const { error } = await supabase
           .from('stop_reports')
-          .insert({ stop_id, category, description: description || '', device_id });
+          .insert({ stop_id, category, description: sanitize(description || ''), device_id });
 
         if (error) throw error;
         return res.json({ ok: true });
@@ -245,6 +258,9 @@ module.exports = async (req, res) => {
         if (!isValidDeviceId(device_id)) {
           return res.status(400).json({ error: 'Valid device_id required' });
         }
+        if (checkDeviceCooldown(device_id, 'deal.vote')) {
+          return res.status(429).json({ error: 'Too many requests, please wait' });
+        }
         if (!deal_id || !['up', 'down'].includes(vote_type)) {
           return res.status(400).json({ error: 'Missing deal_id or invalid vote_type (up|down)' });
         }
@@ -300,7 +316,10 @@ module.exports = async (req, res) => {
       // ── Crowding: Submit a report ────────────────────────────────
       case 'crowding.report': {
         if (req.method !== 'POST') return res.status(405).json({ error: 'POST required' });
-        const { route_id, stop_id, direction_id, vehicle_id, crowding_level } = req.body || {};
+        const { route_id, stop_id, direction_id, vehicle_id, crowding_level, device_id: crDeviceId } = req.body || {};
+        if (crDeviceId && isValidDeviceId(crDeviceId) && checkDeviceCooldown(crDeviceId, 'crowding.report')) {
+          return res.status(429).json({ error: 'Too many requests, please wait' });
+        }
         if (!route_id || !stop_id || crowding_level == null) {
           return res.status(400).json({ error: 'route_id, stop_id, and crowding_level are required' });
         }
@@ -323,7 +342,7 @@ module.exports = async (req, res) => {
           day_of_week: ottawaDay,
         });
 
-        if (error) return res.status(500).json({ error: error.message });
+        if (error) return res.status(500).json({ error: 'Internal server error' });
         return res.json({ success: true });
       }
 
@@ -347,7 +366,7 @@ module.exports = async (req, res) => {
           .eq('day_of_week', dow)
           .in('hour_of_day', hours);
 
-        if (error) return res.status(500).json({ error: error.message });
+        if (error) return res.status(500).json({ error: 'Internal server error' });
 
         if (!data || data.length === 0) {
           return res.json({ avg_crowding: null, report_count: 0, confidence: 'none' });
@@ -377,10 +396,10 @@ module.exports = async (req, res) => {
         const timestamp = new Date().toISOString();
         const summary = [
           `New community deal submitted`,
-          `Venue: ${venue_name}`,
-          `Type: ${deal_type || 'N/A'}`,
-          `Details: ${deal_description || 'N/A'}`,
-          address ? `Address: ${address}` : null,
+          `Venue: ${sanitize(venue_name)}`,
+          `Type: ${sanitize(deal_type || 'N/A')}`,
+          `Details: ${sanitize(deal_description || 'N/A')}`,
+          address ? `Address: ${sanitize(address)}` : null,
           `Time: ${timestamp}`,
         ].filter(Boolean).join('\n');
 
@@ -395,9 +414,13 @@ module.exports = async (req, res) => {
       // ── Ghost bus: Submit report ─────────────────────────────────
       case 'ghost.report': {
         if (req.method !== 'POST') return res.status(405).json({ error: 'POST required' });
-        const { stop_id, route_id, report_type, notes, device_id } = req.body || {};
+        const { stop_id, route_id, report_type, device_id } = req.body || {};
+        const notes = (String(req.body?.notes || '')).slice(0, 500);
         if (!isValidDeviceId(device_id)) {
           return res.status(400).json({ error: 'Valid device_id required' });
+        }
+        if (checkDeviceCooldown(device_id, 'ghost.report')) {
+          return res.status(429).json({ error: 'Too many requests, please wait' });
         }
         if (!stop_id || !route_id || !report_type) {
           return res.status(400).json({ error: 'Missing stop_id, route_id, or report_type' });
@@ -413,7 +436,7 @@ module.exports = async (req, res) => {
             stop_id,
             category: report_type,
             route_id: route_id,
-            description: notes || '',
+            description: sanitize(notes),
             device_id,
           });
 
@@ -506,6 +529,6 @@ module.exports = async (req, res) => {
     }
   } catch (err) {
     console.error(`Community ${action} error:`, err);
-    return res.status(500).json({ error: `${action} failed`, detail: err.message || String(err) });
+    return res.status(500).json({ error: 'Internal server error' });
   }
 };

@@ -22,20 +22,22 @@ const supabase = createClient(
 
 // ── Shared helpers ──────────────────────────────────────────────
 
-function fetchUrl(url) {
+function fetchUrl(url, timeoutMs = 8000) {
   return new Promise((resolve, reject) => {
-    https.get(url, { headers: { 'User-Agent': 'RouteO/1.0' } }, (res) => {
+    const req = https.get(url, { headers: { 'User-Agent': 'RouteO/1.0' } }, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => resolve(data));
       res.on('error', reject);
-    }).on('error', reject);
+    });
+    req.on('error', reject);
+    req.setTimeout(timeoutMs, () => { req.destroy(); reject(new Error('timeout')); });
   });
 }
 
-function fetchJson(url) {
+function fetchJson(url, timeoutMs = 8000) {
   return new Promise((resolve, reject) => {
-    https.get(url, { headers: { 'User-Agent': 'RouteO/1.0' } }, (res) => {
+    const req = https.get(url, { headers: { 'User-Agent': 'RouteO/1.0' } }, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
@@ -43,7 +45,9 @@ function fetchJson(url) {
         catch (e) { reject(new Error('JSON parse failed')); }
       });
       res.on('error', reject);
-    }).on('error', reject);
+    });
+    req.on('error', reject);
+    req.setTimeout(timeoutMs, () => { req.destroy(); reject(new Error('timeout')); });
   });
 }
 
@@ -253,7 +257,10 @@ async function handleGameDay() {
 
 // ── Job: LRT Disruption Alerts ──────────────────────────────────
 
-// In-memory store for previously seen incidents (resets on cold start)
+// In-memory store for previously seen incidents (resets on cold start).
+// Limitation: on serverless cold start, all current incidents will appear "new"
+// and may trigger duplicate notifications. This is acceptable since LRT disruptions
+// are infrequent and the cron interval (5 min) limits blast radius.
 let previousIncidentDescs = new Set();
 
 async function handleLrt() {
@@ -367,8 +374,11 @@ async function handleDepartures() {
   }
 
   // Fetch arrivals for each unique stop (deduplicated)
+  // NOTE: This makes self-referential HTTP calls to the arrivals endpoint,
+  // which is a known limitation in serverless. We cap at 10 stops and use
+  // a 5s per-stop timeout to stay within Vercel's 60s function limit.
   const stopArrivals = {};
-  const uniqueStops = [...allStopIds];
+  const uniqueStops = [...allStopIds].slice(0, 10);
 
   // Process stops in parallel batches of 5
   for (let i = 0; i < uniqueStops.length; i += 5) {
@@ -377,7 +387,7 @@ async function handleDepartures() {
       batch.map(async (stopId) => {
         const resp = await fetch(
           `https://routeo-backend.vercel.app/api/arrivals?stop=${stopId}`,
-          { headers: { Accept: 'application/json', 'x-internal': '1', Authorization: `Bearer ${process.env.CRON_SECRET}` }, signal: AbortSignal.timeout(8000) }
+          { headers: { Accept: 'application/json', 'x-internal': '1', Authorization: `Bearer ${process.env.CRON_SECRET}` }, signal: AbortSignal.timeout(5000) }
         );
         if (!resp.ok) return null;
         const data = await resp.json();
@@ -480,6 +490,6 @@ module.exports = async (req, res) => {
     return res.json({ ok: true, results, timestamp: new Date().toISOString() });
   } catch (err) {
     console.error('Cron-push error:', err);
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: 'Internal server error' });
   }
 };
