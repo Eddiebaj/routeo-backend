@@ -13,43 +13,13 @@
  */
 
 const { createClient } = require('@supabase/supabase-js');
+const { fetchUrl, fetchJson } = require('./_fetch');
 const https = require('https');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
 );
-
-// ── Shared helpers ──────────────────────────────────────────────
-
-function fetchUrl(url, timeoutMs = 8000) {
-  return new Promise((resolve, reject) => {
-    const req = https.get(url, { headers: { 'User-Agent': 'RouteO/1.0' } }, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => resolve(data));
-      res.on('error', reject);
-    });
-    req.on('error', reject);
-    req.setTimeout(timeoutMs, () => { req.destroy(); reject(new Error('timeout')); });
-  });
-}
-
-function fetchJson(url, timeoutMs = 8000) {
-  return new Promise((resolve, reject) => {
-    const req = https.get(url, { headers: { 'User-Agent': 'RouteO/1.0' } }, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try { resolve(JSON.parse(data)); }
-        catch (e) { reject(new Error('JSON parse failed')); }
-      });
-      res.on('error', reject);
-    });
-    req.on('error', reject);
-    req.setTimeout(timeoutMs, () => { req.destroy(); reject(new Error('timeout')); });
-  });
-}
 
 /**
  * Send Expo push notifications via the Expo Push API.
@@ -151,11 +121,14 @@ async function handleGarbage() {
   const tokens = await getSubscribedTokens('garbageDay');
   if (!tokens.length) return { job: 'garbage', sent: 0, reason: 'no subscribers' };
 
-  // Tomorrow's date in Ottawa timezone (ET)
+  // Tomorrow's date in Ottawa timezone (ET) using formatToParts for reliability
   const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Toronto', year: 'numeric', month: '2-digit', day: '2-digit' });
-  const todayOttawa = fmt.format(new Date());
-  // Add one day by adding 86400000ms to a noon-UTC date
-  const todayNoon = new Date(todayOttawa + 'T12:00:00Z'); // force UTC
+  const parts = fmt.formatToParts(new Date());
+  const yPart = parts.find(p => p.type === 'year').value;
+  const mPart = parts.find(p => p.type === 'month').value;
+  const dPart = parts.find(p => p.type === 'day').value;
+  // Build a reliable noon-UTC date from the extracted parts, then add one day
+  const todayNoon = new Date(Date.UTC(parseInt(yPart), parseInt(mPart) - 1, parseInt(dPart), 12, 0, 0));
   todayNoon.setUTCDate(todayNoon.getUTCDate() + 1);
   const tomorrowStr = fmt.format(todayNoon);
 
@@ -257,11 +230,32 @@ async function handleGameDay() {
 
 // ── Job: LRT Disruption Alerts ──────────────────────────────────
 
-// In-memory store for previously seen incidents (resets on cold start).
-// Limitation: on serverless cold start, all current incidents will appear "new"
-// and may trigger duplicate notifications. This is acceptable since LRT disruptions
-// are infrequent and the cron interval (5 min) limits blast radius.
-let previousIncidentDescs = new Set();
+// LRT dedup: check Supabase lrt_notifications_sent table for recently sent descriptions.
+// Falls back to sending (fail open) if Supabase query fails.
+async function getRecentlySentDescs() {
+  try {
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    const { data, error } = await supabase
+      .from('lrt_notifications_sent')
+      .select('description')
+      .gte('sent_at', twoHoursAgo);
+    if (error) throw error;
+    return new Set((data || []).map(r => r.description));
+  } catch (e) {
+    console.warn('LRT dedup read failed (fail open):', e.message);
+    return new Set(); // fail open — treat all as new
+  }
+}
+
+async function recordSentDesc(description) {
+  try {
+    await supabase
+      .from('lrt_notifications_sent')
+      .insert({ description, sent_at: new Date().toISOString() });
+  } catch (e) {
+    console.warn('LRT dedup write failed:', e.message);
+  }
+}
 
 async function handleLrt() {
   const tokens = await getSubscribedTokens('lrtDisruption');
@@ -285,14 +279,12 @@ async function handleLrt() {
     }
   }
 
-  // Check for new incidents
+  // Check for new incidents (persisted dedup via Supabase)
+  const previousDescs = await getRecentlySentDescs();
   const incidents = lrtData.incidents || [];
   const newIncidents = incidents.filter(inc => {
-    return inc.hoursAgo < 2 && !previousIncidentDescs.has(inc.description);
+    return inc.hoursAgo < 2 && !previousDescs.has(inc.description);
   });
-
-  // Update seen incidents
-  previousIncidentDescs = new Set(incidents.map(i => i.description));
 
   if (!newIncidents.length && !disruptions.length) {
     return { job: 'lrt', sent: 0, reason: 'no new disruptions' };
@@ -328,6 +320,12 @@ async function handleLrt() {
   }
 
   const result = await sendExpoPush(messages);
+
+  // Record sent incident descriptions to Supabase for dedup across cold starts
+  for (const inc of newIncidents) {
+    await recordSentDesc(inc.description);
+  }
+
   return { job: 'lrt', ...result, newIncidents: newIncidents.length, disruptions: disruptions.length };
 }
 

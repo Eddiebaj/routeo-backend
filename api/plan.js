@@ -6,7 +6,7 @@ const GOOGLE_KEY = process.env.GOOGLE_API_KEY;
 const GENERIC_NAMES = new Set(['path', 'sidewalk', 'footway', 'steps', 'pedestrian', 'service', 'track', 'cycleway', 'residential']);
 
 module.exports = async function handler(req, res) {
-  if (checkRateLimit(req, res)) return;
+  if (await checkRateLimit(req, res)) return;
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
 
@@ -27,7 +27,7 @@ module.exports = async function handler(req, res) {
     const [y, m, d] = ottawaDate.split('-');
     tripDate = `${m}-${d}-${y}`;
   }
-  const tripTime = time || formatTime(new Date());
+  const tripTime = time || (() => { const n = new Date(); return `${String(n.getHours()).padStart(2,'0')}:${String(n.getMinutes()).padStart(2,'0')}`; })();
 
   // Map client mode to OTP mode string
   const MODE_MAP = { transit: 'TRANSIT,WALK', driving: 'CAR', bicycling: 'BICYCLE', walking: 'WALK' };
@@ -212,10 +212,3 @@ function extractStreetName(html) {
   return null;
 }
 
-function formatDate(d) {
-  return `${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}-${d.getFullYear()}`;
-}
-
-function formatTime(d) {
-  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
-}

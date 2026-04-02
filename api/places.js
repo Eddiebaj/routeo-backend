@@ -18,7 +18,7 @@ function sanitizeRadius(raw) {
 }
 
 module.exports = async function handler(req, res) {
-  if (checkRateLimit(req, res)) return;
+  if (await checkRateLimit(req, res)) return;
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
 

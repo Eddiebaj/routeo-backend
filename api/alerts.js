@@ -5,28 +5,7 @@
  */
 
 const { checkRateLimit } = require('./_rateLimit');
-const https = require('https');
-
-// ── Shared helpers ───────────────────────────────────────────────
-const MAX_RESPONSE_BYTES = 2 * 1024 * 1024; // 2MB
-
-function fetchUrl(url) {
-  return new Promise((resolve, reject) => {
-    const req = https.get(url, { headers: { 'User-Agent': 'RouteO/1.0' } }, (res) => {
-      let data = '';
-      let bytes = 0;
-      res.on('data', chunk => {
-        bytes += chunk.length;
-        if (bytes > MAX_RESPONSE_BYTES) { req.destroy(); return reject(new Error('Response body too large')); }
-        data += chunk;
-      });
-      res.on('end', () => resolve(data));
-      res.on('error', reject);
-    });
-    req.on('error', reject);
-    req.setTimeout(8000, () => { req.destroy(); reject(new Error('timeout')); });
-  });
-}
+const { fetchUrl } = require('./_fetch');
 
 // ══════════════════════════════════════════════════════════════════
 // OC Transpo RSS Alerts
@@ -237,7 +216,7 @@ async function handleLrt(res) {
 // Handler — routes by ?action=
 // ══════════════════════════════════════════════════════════════════
 module.exports = async (req, res) => {
-  if (checkRateLimit(req, res)) return;
+  if (await checkRateLimit(req, res)) return;
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cache-Control', 's-maxage=300');
 

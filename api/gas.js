@@ -6,7 +6,7 @@ const { checkRateLimit } = require('./_rateLimit');
 let cachedResult = null;
 
 module.exports = async function handler(req, res) {
-  if (checkRateLimit(req, res)) return;
+  if (await checkRateLimit(req, res)) return;
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
   res.setHeader('Cache-Control', 's-maxage=1800, stale-while-revalidate=3600'); // cache 30min

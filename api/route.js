@@ -6,6 +6,7 @@
  */
 
 const { checkRateLimit } = require('./_rateLimit');
+const { timeToMins } = require('./_gtfs');
 const OTP_BASE = 'https://routeo-otp-production.up.railway.app';
 
 /** Decode Google encoded polyline string into [{latitude, longitude}] */
@@ -31,12 +32,6 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
-function timeToMins(t) {
-  if (!t) return 9999;
-  const parts = t.split(':').map(Number);
-  return parts[0] * 60 + parts[1];
-}
-
 function minsToTime(m) {
   const h = Math.floor(m / 60) % 24;
   const min = m % 60;
@@ -55,7 +50,7 @@ function getDayType() {
 }
 
 module.exports = async (req, res) => {
-  if (checkRateLimit(req, res)) return;
+  if (await checkRateLimit(req, res)) return;
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cache-Control', 's-maxage=600');
 

@@ -48,16 +48,28 @@ function isValidDeviceId(id) {
 const sanitize = (s) => String(s).replace(/[<>]/g, '');
 
 const deviceCooldowns = new Map();
+const COOLDOWN_CLEANUP_INTERVAL = 5 * 60 * 1000; // 5 minutes
+const COOLDOWN_MAX_AGE = 24 * 60 * 60 * 1000; // 24 hours
+let lastCooldownCleanup = Date.now();
+
 function checkDeviceCooldown(deviceId, action, cooldownMs = 5000) {
+  const now = Date.now();
+  // Periodic cleanup: remove entries older than 24 hours, at most once per 5 min
+  if (now - lastCooldownCleanup >= COOLDOWN_CLEANUP_INTERVAL) {
+    lastCooldownCleanup = now;
+    for (const [k, ts] of deviceCooldowns) {
+      if (now - ts > COOLDOWN_MAX_AGE) deviceCooldowns.delete(k);
+    }
+  }
   const key = `${deviceId}:${action}`;
   const last = deviceCooldowns.get(key);
-  if (last && Date.now() - last < cooldownMs) return true;
-  deviceCooldowns.set(key, Date.now());
+  if (last && now - last < cooldownMs) return true;
+  deviceCooldowns.set(key, now);
   return false;
 }
 
 module.exports = async (req, res) => {
-  if (checkRateLimit(req, res)) return;
+  if (await checkRateLimit(req, res)) return;
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -106,18 +118,17 @@ module.exports = async (req, res) => {
           return res.status(400).json({ error: 'Invalid subscriptions' });
         }
 
-        // Upsert each subscription
-        for (const sub of subscriptions) {
-          const { error } = await supabase
-            .from('push_subscriptions')
-            .upsert({
-              device_id,
-              type: sub.type,
-              enabled: sub.enabled,
-              metadata: sub.metadata || {},
-            }, { onConflict: 'device_id,type' });
-          if (error) throw error;
-        }
+        // Bulk upsert all subscriptions in a single call
+        const allRows = subscriptions.map(sub => ({
+          device_id,
+          type: sub.type,
+          enabled: sub.enabled,
+          metadata: sub.metadata || {},
+        }));
+        const { error } = await supabase
+          .from('push_subscriptions')
+          .upsert(allRows, { onConflict: 'device_id,type' });
+        if (error) throw error;
 
         return res.json({ ok: true, count: subscriptions.length });
       }
@@ -317,7 +328,10 @@ module.exports = async (req, res) => {
       case 'crowding.report': {
         if (req.method !== 'POST') return res.status(405).json({ error: 'POST required' });
         const { route_id, stop_id, direction_id, vehicle_id, crowding_level, device_id: crDeviceId } = req.body || {};
-        if (crDeviceId && isValidDeviceId(crDeviceId) && checkDeviceCooldown(crDeviceId, 'crowding.report')) {
+        if (!crDeviceId || !isValidDeviceId(crDeviceId)) {
+          return res.status(400).json({ error: 'device_id required' });
+        }
+        if (checkDeviceCooldown(crDeviceId, 'crowding.report')) {
           return res.status(429).json({ error: 'Too many requests, please wait' });
         }
         if (!route_id || !stop_id || crowding_level == null) {

@@ -1,5 +1,5 @@
 const { checkRateLimit } = require('./_rateLimit');
-const crypto = require('crypto');
+const { buildStoUrl } = require('./_sto');
 const GtfsRealtimeBindings = require('gtfs-realtime-bindings');
 
 // ── OC Transpo config ────────────────────────────────────────
@@ -7,32 +7,39 @@ const OC_API_KEY = process.env.OC_TRANSPO_API_KEY;
 const TRIP_UPDATES_URL = 'https://nextrip-public-api.azure-api.net/octranspo/gtfs-rt-tp/beta/v1/TripUpdates?format=json';
 const STOPS_URL = 'https://raw.githubusercontent.com/Eddiebaj/routeo-backend/main/api/stops.txt';
 
-// ── STO config ───────────────────────────────────────────────
-const STO_HOST = 'https://gtfs.sto.ca/download.php';
-const STO_PUBLIC_KEY = process.env.STO_API_KEY;
-const STO_PRIVATE_KEY = process.env.STO_PRIVATE_KEY;
-
 let stopsCache = null;
+let stopsCacheTs = 0;
+const STOPS_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
 async function loadStops() {
-  if (stopsCache) return stopsCache;
-  const resp = await fetch(STOPS_URL, { signal: AbortSignal.timeout(10000) });
-  const txt = await resp.text();
-  const lines = txt.split('\n');
-  const map = {};
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].trim().replace(/\r/g, '');
-    if (!line) continue;
-    const cols = line.split(',');
-    const stopId = cols[0] ? cols[0].trim() : '';
-    const lat = parseFloat(cols[5]);
-    const lng = parseFloat(cols[6]);
-    if (stopId && !isNaN(lat) && !isNaN(lng)) {
-      map[stopId] = { lat, lng };
+  if (stopsCache && Date.now() - stopsCacheTs < STOPS_TTL) return stopsCache;
+  try {
+    const resp = await fetch(STOPS_URL, { signal: AbortSignal.timeout(10000) });
+    const txt = await resp.text();
+    const lines = txt.split('\n');
+    const map = {};
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i].trim().replace(/\r/g, '');
+      if (!line) continue;
+      const cols = line.split(',');
+      const stopId = cols[0] ? cols[0].trim() : '';
+      const lat = parseFloat(cols[5]);
+      const lng = parseFloat(cols[6]);
+      if (stopId && !isNaN(lat) && !isNaN(lng)) {
+        map[stopId] = { lat, lng };
+      }
     }
+    stopsCache = map;
+    stopsCacheTs = Date.now();
+    return map;
+  } catch (err) {
+    // If fetch fails but stale cache exists, use it
+    if (stopsCache) {
+      console.warn('Stops fetch failed, using stale cache:', err.message);
+      return stopsCache;
+    }
+    throw err;
   }
-  stopsCache = map;
-  return map;
 }
 
 function getTime(stu) {
@@ -41,21 +48,6 @@ function getTime(stu) {
   if (arr && arr.HasTime && arr.Time) return parseInt(arr.Time);
   if (dep && dep.HasTime && dep.Time) return parseInt(dep.Time);
   return 0;
-}
-
-// ── STO auth: SHA256(private_key + UTC timestamp) ────────────
-function buildStoUrl(fileType) {
-  if (!STO_PUBLIC_KEY || !STO_PRIVATE_KEY) return null;
-  const now = new Date();
-  const y = now.getUTCFullYear();
-  const mo = String(now.getUTCMonth() + 1).padStart(2, '0');
-  const d = String(now.getUTCDate()).padStart(2, '0');
-  const h = String(now.getUTCHours()).padStart(2, '0');
-  const mi = String(now.getUTCMinutes()).padStart(2, '0');
-  const dateIso = `${y}${mo}${d}T${h}${mi}Z`;
-  const salted = STO_PRIVATE_KEY + dateIso;
-  const hash = crypto.createHash('sha256').update(salted, 'utf8').digest('hex').toUpperCase();
-  return `${STO_HOST}?hash=${hash}&file=${fileType}&key=${STO_PUBLIC_KEY}`;
 }
 
 // ── Fetch STO VehiclePositions (protobuf) ────────────────────
@@ -116,14 +108,15 @@ async function fetchOcVehicles(stopsMap, now, isDebug) {
   const vehicles = [];
   let noSegment = 0, noStopCoords = 0;
 
-  for (const ent of entities) {
+  for (let idx = 0; idx < entities.length; idx++) {
+    const ent = entities[idx];
     const tu = ent.TripUpdate;
     if (!tu) continue;
 
     const trip = tu.Trip || {};
     const routeId = trip.RouteId ? String(trip.RouteId) : '';
     if (!routeId) continue; // skip trips with no route ID
-    const tripId = String(trip.TripId || ent.Id || Math.random());
+    const tripId = String(trip.TripId || ent.Id || 'unknown-' + (ent.vehicle?.vehicle?.id || ent.id || idx));
     const updates = tu.StopTimeUpdate || [];
 
     let fromStop = null, toStop = null, fromTime = null, toTime = null;
@@ -182,7 +175,7 @@ async function fetchOcVehicles(stopsMap, now, isDebug) {
 
 // ── Main handler ─────────────────────────────────────────────
 module.exports = async (req, res) => {
-  if (checkRateLimit(req, res)) return;
+  if (await checkRateLimit(req, res)) return;
   res.setHeader('Access-Control-Allow-Origin', '*');
 
   try {
@@ -218,7 +211,7 @@ module.exports = async (req, res) => {
     if (isDebug) {
       resp.debug = {
         ...ocDebug,
-        stoEnabled: !!(STO_PUBLIC_KEY && STO_PRIVATE_KEY),
+        stoEnabled: !!(process.env.STO_API_KEY && process.env.STO_PRIVATE_KEY),
         stoVehiclesSample: stoVehicles.slice(0, 3),
       };
     }

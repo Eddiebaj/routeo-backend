@@ -1,7 +1,8 @@
 const { checkRateLimit } = require('./_rateLimit');
+const { buildStoUrl } = require('./_sto');
+const { timeToMins } = require('./_gtfs');
 const { createClient } = require('@supabase/supabase-js');
 const GtfsRealtimeBindings = require('gtfs-realtime-bindings');
-const crypto = require('crypto');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -9,28 +10,15 @@ const supabase = createClient(
 );
 
 const OC_KEY = process.env.OC_TRANSPO_API_KEY;
-const STO_PUBLIC_KEY = process.env.STO_API_KEY;
-const STO_PRIVATE_KEY = process.env.STO_PRIVATE_KEY;
 
 const AdmZip = require('adm-zip');
 
 const GTFS_RT_URL = 'https://nextrip-public-api.azure-api.net/octranspo/gtfs-rt-tu/beta/v1/TripUpdates?format=json';
 const STO_GTFS_ZIP_URL = 'https://www.contenu.sto.ca/GTFS/GTFS.zip';
 
-// ── STO auth: SHA256(private_key + UTC timestamp) ────────────
-function buildStoUrl(fileType) {
-  if (!STO_PUBLIC_KEY || !STO_PRIVATE_KEY) return null;
-  const now = new Date();
-  const y = now.getUTCFullYear();
-  const mo = String(now.getUTCMonth() + 1).padStart(2, '0');
-  const d = String(now.getUTCDate()).padStart(2, '0');
-  const h = String(now.getUTCHours()).padStart(2, '0');
-  const mi = String(now.getUTCMinutes()).padStart(2, '0');
-  const dateIso = `${y}${mo}${d}T${h}${mi}Z`;
-  const salted = STO_PRIVATE_KEY + dateIso;
-  const hash = crypto.createHash('sha256').update(salted, 'utf8').digest('hex').toUpperCase();
-  return `https://gtfs.sto.ca/download.php?hash=${hash}&file=${fileType}&key=${STO_PUBLIC_KEY}`;
-}
+// Module-level cache for OC Transpo GTFS-RT feed (shared across concurrent requests)
+let rtCache = { data: null, ts: 0 };
+const RT_TTL = 30000; // 30 seconds
 
 // ── STO headsign lookup (cached in module scope, refreshed daily) ──
 let stoTripsMap = {};      // { [trip_id]: headsign }
@@ -180,12 +168,6 @@ function cleanHeadsign(headsign, routeId) {
   return cleaned || `Route ${routeId}`;
 }
 
-function timeToMins(t) {
-  if (!t) return 9999;
-  const parts = t.split(':').map(Number);
-  return parts[0] * 60 + (parts[1] || 0);
-}
-
 function getTodayServiceKeyword() {
   // Use Toronto timezone — Vercel runs in UTC, which can be a different day
   const ottawaDay = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Toronto', weekday: 'long' }).toLowerCase();
@@ -209,18 +191,28 @@ function getYesterdayServiceKeyword() {
   return 'weekday';
 }
 
-// ── Fetch OC Transpo GTFS-RT live predictions ──────────────────
-async function fetchRealtime(stopId) {
-  if (!OC_KEY) { console.warn('OC_TRANSPO_API_KEY not set'); return []; }
-  const stopIds = MULTI_PLATFORM_STOPS[stopId] || [stopId];
-  const stopSet = new Set(stopIds.map(String));
-
+// ── Fetch OC Transpo GTFS-RT feed (cached) ─────────────────────
+async function fetchGtfsRtData() {
+  if (rtCache.data && Date.now() - rtCache.ts < RT_TTL) {
+    return rtCache.data;
+  }
   const resp = await fetch(GTFS_RT_URL, {
     headers: { 'Ocp-Apim-Subscription-Key': OC_KEY },
     signal: AbortSignal.timeout(8000),
   });
   if (!resp.ok) throw new Error(`GTFS-RT ${resp.status}`);
   const data = await resp.json();
+  rtCache = { data, ts: Date.now() };
+  return data;
+}
+
+// ── Fetch OC Transpo GTFS-RT live predictions ──────────────────
+async function fetchRealtime(stopId) {
+  if (!OC_KEY) { console.warn('OC_TRANSPO_API_KEY not set'); return []; }
+  const stopIds = MULTI_PLATFORM_STOPS[stopId] || [stopId];
+  const stopSet = new Set(stopIds.map(String));
+
+  const data = await fetchGtfsRtData();
 
   const now = Math.floor(Date.now() / 1000);
   const results = [];
@@ -490,7 +482,7 @@ async function fetchStatic(stopId) {
 }
 
 module.exports = async (req, res) => {
-  if (checkRateLimit(req, res)) return;
+  if (await checkRateLimit(req, res)) return;
   res.setHeader('Access-Control-Allow-Origin', '*');
 
   const rawStopId = req.query.stop || req.query.stopId;

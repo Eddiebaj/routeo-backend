@@ -1,69 +1,102 @@
 /**
- * RouteO — In-memory rate limiter for Vercel serverless functions
- * 60 requests per minute per IP, with periodic cleanup of expired entries.
+ * RouteO — Supabase-based rate limiter for Vercel serverless functions
+ * 60 requests per minute per IP, persisted in Supabase rate_limits table.
  *
  * Usage (CJS):
  *   const { checkRateLimit } = require('./_rateLimit');
  *
- * Usage (ESM):
- *   import { checkRateLimit } from './_rateLimit.js';
- *
- * Inside handler:
- *   if (checkRateLimit(req, res)) return;
+ * Inside handler (must be async):
+ *   if (await checkRateLimit(req, res)) return;
  */
+
+const { createClient } = require('@supabase/supabase-js');
 
 const WINDOW_MS = 60 * 1000;       // 1 minute window
 const MAX_REQUESTS = 60;            // requests per window
-const CLEANUP_INTERVAL = 5 * 60 * 1000; // purge stale entries every 5 min
 
-const hits = new Map(); // IP -> { count, resetTime }
-let lastCleanup = Date.now();
-
-function cleanup() {
-  const now = Date.now();
-  if (now - lastCleanup < CLEANUP_INTERVAL) return;
-  lastCleanup = now;
-  for (const [ip, entry] of hits) {
-    if (now >= entry.resetTime) hits.delete(ip);
-  }
-}
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
+);
 
 /**
  * Check rate limit for the incoming request.
- * @returns {boolean} true if the request was rate-limited (response already sent)
+ * Uses Supabase rate_limits table. Fails open on DB errors.
+ * @returns {Promise<boolean>} true if the request was rate-limited (response already sent)
  */
-function checkRateLimit(req, res) {
-  cleanup();
-
+async function checkRateLimit(req, res) {
   const ip =
     (req.headers['x-forwarded-for'] || '').split(',')[0].trim() ||
     req.headers['x-real-ip'] ||
     req.socket?.remoteAddress ||
     'unknown';
 
-  const now = Date.now();
-  let entry = hits.get(ip);
+  const now = new Date();
+  const nowMs = now.getTime();
 
-  if (!entry || now >= entry.resetTime) {
-    entry = { count: 1, resetTime: now + WINDOW_MS };
-    hits.set(ip, entry);
-  } else {
-    entry.count++;
+  try {
+    // Read current entry
+    const { data: entry, error: readErr } = await supabase
+      .from('rate_limits')
+      .select('count, reset_at')
+      .eq('ip', ip)
+      .single();
+
+    if (readErr && readErr.code !== 'PGRST116') {
+      // DB error (not "no rows") — fail open
+      return false;
+    }
+
+    if (!entry || new Date(entry.reset_at).getTime() <= nowMs) {
+      // No entry or window expired — reset count to 1
+      const resetAt = new Date(nowMs + WINDOW_MS).toISOString();
+      const { error: upsertErr } = await supabase
+        .from('rate_limits')
+        .upsert({ ip, count: 1, reset_at: resetAt }, { onConflict: 'ip' });
+
+      if (upsertErr) {
+        // Fail open
+        return false;
+      }
+
+      res.setHeader('X-RateLimit-Limit', String(MAX_REQUESTS));
+      res.setHeader('X-RateLimit-Remaining', String(MAX_REQUESTS - 1));
+      return false;
+    }
+
+    // Window still active
+    const newCount = entry.count + 1;
+    const resetAtMs = new Date(entry.reset_at).getTime();
+
+    if (newCount > MAX_REQUESTS) {
+      // Rate limited
+      const retryAfter = Math.ceil((resetAtMs - nowMs) / 1000);
+      res.setHeader('X-RateLimit-Limit', String(MAX_REQUESTS));
+      res.setHeader('X-RateLimit-Remaining', '0');
+      res.setHeader('Retry-After', String(retryAfter));
+      res.status(429).json({ error: 'Rate limit exceeded. Try again later.' });
+      return true;
+    }
+
+    // Increment count
+    const { error: updateErr } = await supabase
+      .from('rate_limits')
+      .update({ count: newCount })
+      .eq('ip', ip);
+
+    if (updateErr) {
+      // Fail open
+      return false;
+    }
+
+    const remaining = Math.max(0, MAX_REQUESTS - newCount);
+    res.setHeader('X-RateLimit-Limit', String(MAX_REQUESTS));
+    res.setHeader('X-RateLimit-Remaining', String(remaining));
+    return false;
+  } catch (err) {
+    // Fail open on any unexpected error
+    return false;
   }
-
-  const remaining = Math.max(0, MAX_REQUESTS - entry.count);
-  const retryAfter = Math.ceil((entry.resetTime - now) / 1000);
-
-  res.setHeader('X-RateLimit-Limit', String(MAX_REQUESTS));
-  res.setHeader('X-RateLimit-Remaining', String(remaining));
-
-  if (entry.count > MAX_REQUESTS) {
-    res.setHeader('Retry-After', String(retryAfter));
-    res.status(429).json({ error: 'Rate limit exceeded. Try again later.' });
-    return true;
-  }
-
-  return false;
 }
 
 module.exports = { checkRateLimit };

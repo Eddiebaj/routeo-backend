@@ -10,12 +10,6 @@ const supabase = createClient(
 const GTFS_URL = 'https://oct-gtfs-emasagcnfmcgeham.z01.azurefd.net/public-access/GTFSExport.zip';
 const BATCH_SIZE = 500;
 
-function timeToMins(t) {
-  if (!t) return 9999;
-  const parts = t.split(':').map(Number);
-  return parts[0] * 60 + parts[1];
-}
-
 async function downloadBuffer(url) {
   const https = require('https');
   return new Promise((resolve, reject) => {
@@ -74,7 +68,7 @@ async function seedStops(zip) {
 }
 
 module.exports = async (req, res) => {
-  if (checkRateLimit(req, res)) return;
+  if (await checkRateLimit(req, res)) return;
   const auth = req.headers['authorization'];
   if (!process.env.CRON_SECRET || auth !== `Bearer ${process.env.CRON_SECRET}`) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -153,15 +147,9 @@ module.exports = async (req, res) => {
     console.log(`Upserting ${tripRows.length} trips...`);
     await batchUpsert('trips', tripRows, 'trip_id');
 
-    // stop_times: no single unique key, so we must delete+insert.
-    // Trade-off: there is a brief window where arrivals may return empty.
-    // This cron runs at off-peak hours (4 AM ET) to minimize impact.
-    console.log('Deleting old OC stop_times...');
-    const { error: delStErr } = await supabase.from('stop_times').delete().eq('agency', 'OC');
-    if (delStErr) throw new Error(`Delete stop_times failed: ${delStErr.message}`);
-
-    console.log(`Inserting ${stopTimeRows.length} stop_times...`);
-    await batchInsert('stop_times', stopTimeRows);
+    // stop_times: upsert to avoid delete+insert gap where arrivals return empty
+    console.log(`Upserting ${stopTimeRows.length} stop_times...`);
+    await batchUpsert('stop_times', stopTimeRows, 'stop_id,trip_id,arrival_time');
 
     console.log('Done.');
     res.json({
