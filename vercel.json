@@ -20,7 +20,7 @@
     },
     {
       "path": "/api/cron-push?job=lrt",
-      "schedule": "0 11 * * *"
+      "schedule": "0 7 * * *"
     },
     {
       "path": "/api/cron-push?job=departures",
@@ -28,7 +28,7 @@
     },
     {
       "path": "/api/cron-push?job=disruptions",
-      "schedule": "*/15 6-23 * * *"
+      "schedule": "0 12 * * *"
     }
   ]
 }
