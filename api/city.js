@@ -1,10 +1,23 @@
 // api/city.js — Consolidated city data endpoint for RouteO
-// Routes by ?type param: foursquare, ottawa, construction, parking
+// Routes by ?type param: foursquare, ottawa, construction, parking, gas, bike_share
 // GET /api/city?type=foursquare&category=restaurants&lat=45.42&lng=-75.69&radius=1500
 // GET /api/city?type=ottawa&layer=food_trucks
 // GET /api/city?type=construction
 // GET /api/city?type=parking
+// GET /api/city?type=bike_share
 const { checkRateLimit } = require('./_rateLimit');
+
+// ── Cache eviction helper ────────────────────────────────────────
+function evictOldest(cache, max, evictCount) {
+  if (cache.size > max) {
+    let deleted = 0;
+    for (const key of cache.keys()) {
+      if (deleted >= evictCount) break;
+      cache.delete(key);
+      deleted++;
+    }
+  }
+}
 
 // ── Foursquare ──────────────────────────────────────────────────
 
@@ -14,9 +27,11 @@ const FSQ_CATEGORY_MAP = {
 };
 const PRICE_LABELS = { 1: '$', 2: '$$', 3: '$$$', 4: '$$$$' };
 const fsqCache = new Map();
-const FSQ_CACHE_TTL = 24 * 60 * 60 * 1000;
+const FSQ_CACHE_TTL = 2 * 60 * 60 * 1000;
 
 async function handleFoursquare(req, res) {
+  if (!process.env.FOURSQUARE_API_KEY) return res.status(500).json({ error: 'Service unavailable' });
+
   const { lat, lng, category, radius } = req.query;
   const latNum = parseFloat(lat);
   const lngNum = parseFloat(lng);
@@ -28,7 +43,7 @@ async function handleFoursquare(req, res) {
   }
 
   const radiusNum = Math.min(Math.max(parseInt(radius, 10) || 1000, 100), 50000);
-  const cacheKey = `${latNum.toFixed(2)}|${lngNum.toFixed(2)}|${category}`;
+  const cacheKey = `${latNum.toFixed(2)}|${lngNum.toFixed(2)}|${category}|${radiusNum}`;
 
   const cached = fsqCache.get(cacheKey);
   if (cached && Date.now() - cached.ts < FSQ_CACHE_TTL) {
@@ -36,7 +51,7 @@ async function handleFoursquare(req, res) {
   }
 
   const categoryId = FSQ_CATEGORY_MAP[category];
-  const url = `https://api.foursquare.com/v3/places/search?ll=${latNum},${lngNum}&categories=${categoryId}&radius=${radiusNum}&limit=20&fields=fsq_id,name,categories,geocodes,location,photos,rating,price,hours,stats`;
+  const url = `https://api.foursquare.com/v3/places/search?ll=${latNum},${lngNum}&categories=${categoryId}&radius=${radiusNum}&limit=20&fields=fsq_id,name,categories,geocodes,location,photos,rating,price,hours`;
 
   const resp = await fetch(url, {
     headers: { Authorization: process.env.FOURSQUARE_API_KEY, Accept: 'application/json' },
@@ -59,22 +74,24 @@ async function handleFoursquare(req, res) {
       lat: place.geocodes?.main?.latitude || null,
       lng: place.geocodes?.main?.longitude || null,
       address: place.location?.formatted_address || place.location?.address || '',
+      subtitle: place.location?.formatted_address || place.location?.address || '',
       rating: place.rating || null,
       price: place.price != null ? (PRICE_LABELS[place.price] || null) : null,
       isOpenNow: place.hours?.open_now || false,
       photoUrl: photo ? `${photo.prefix}200x200${photo.suffix}` : null,
       source: 'foursquare',
     };
-  });
+  }).filter(r => r.lat != null && r.lng != null && !isNaN(r.lat) && !isNaN(r.lng));
 
   fsqCache.set(cacheKey, { ts: Date.now(), data: results });
+  evictOldest(fsqCache, 100, 20);
   return res.status(200).json(results);
 }
 
 // ── Ottawa Open Data (ArcGIS) ───────────────────────────────────
 
 const ARCGIS_BASE = 'https://services.arcgis.com/G6F8XLCl5KtAlZ2G/arcgis/rest/services';
-const QUERY_SUFFIX = '/FeatureServer/0/query?where=1%3D1&outFields=*&f=json';
+const QUERY_SUFFIX = '/FeatureServer/0/query?where=1%3D1&outFields=*&f=json&resultRecordCount=50';
 
 const OTTAWA_SOURCES = {
   food_trucks: 'Street_Food_Vendors',
@@ -86,6 +103,7 @@ const OTTAWA_SOURCES = {
   ev_chargers: 'Electric_Vehicle_Charging_Stations_Usage_Data',
 };
 
+// TODO: Replace with Ottawa Open Data when available
 const FARMERS_MARKETS = [
   { id: 'market_lansdowne', name: 'Lansdowne Farmers Market', nameFr: 'March\u00e9 fermier de Lansdowne', lat: 45.4008, lng: -75.6878, days: 'Sunday year-round', hours: '10am-3pm', category: 'markets', source: 'ottawa', subtitle: 'Sunday year-round, 10am-3pm' },
   { id: 'market_main', name: 'Main Street Farmers Market', nameFr: 'March\u00e9 fermier de la rue Main', lat: 45.4089, lng: -75.6721, days: 'Saturday May-Oct', hours: '9am-2pm', category: 'markets', source: 'ottawa', subtitle: 'Saturday May-Oct, 9am-2pm' },
@@ -137,11 +155,15 @@ function normalizeOttawaFeature(type, feature) {
       subtitle = attrs.SUB || attrs.Sub || '';
       const loc = attrs.LOCATION || attrs.Location || attrs.ADDRESS || attrs.Address || '';
       if (loc) subtitle = subtitle ? `${subtitle} - ${loc}` : loc;
+      lat = attrs.LATITUDE || attrs.Latitude || attrs.LAT || null;
+      lng = attrs.LONGITUDE || attrs.Longitude || attrs.LONG || null;
       break;
     }
     case 'wifi':
       name = attrs.Name || attrs.NAME || '';
       subtitle = attrs.Address || attrs.ADDRESS || '';
+      lat = attrs.LATITUDE || attrs.Latitude || attrs.LAT || null;
+      lng = attrs.LONGITUDE || attrs.Longitude || attrs.LONG || null;
       break;
     case 'bike_repair':
       name = attrs.LOCATION_EN || attrs.Location_EN || attrs.NAME || '';
@@ -152,6 +174,8 @@ function normalizeOttawaFeature(type, feature) {
     case 'ev_chargers':
       name = attrs.Station || attrs.STATION || attrs.Name || '';
       subtitle = attrs.Address || attrs.ADDRESS || '';
+      lat = attrs.LATITUDE || attrs.Latitude || attrs.LAT || null;
+      lng = attrs.LONGITUDE || attrs.Longitude || attrs.LONG || null;
       break;
   }
 
@@ -164,7 +188,7 @@ function normalizeOttawaFeature(type, feature) {
     }
   }
 
-  const id = attrs.OBJECTID || attrs.ObjectId || attrs.FID || `${type}_${Math.random().toString(36).slice(2, 10)}`;
+  const id = attrs.OBJECTID || attrs.ObjectId || attrs.FID || `${type}_${(name + String(lat) + String(lng)).replace(/\s/g, '').slice(0, 20)}`;
   return { id: String(id), name, category: type, lat, lng, subtitle, description, url, photoUrl, source: 'ottawa' };
 }
 
@@ -196,8 +220,9 @@ async function handleOttawa(req, res) {
   }
 
   const data = await resp.json();
-  const results = (data.features || []).map(f => normalizeOttawaFeature(layer, f)).filter(r => r.name);
+  const results = (data.features || []).map(f => normalizeOttawaFeature(layer, f)).filter(r => r.name).filter(r => r.lat != null && r.lng != null && !isNaN(r.lat) && !isNaN(r.lng));
   ottawaCache.set(layer, { ts: Date.now(), data: results });
+  evictOldest(ottawaCache, 100, 20);
   return res.status(200).json(results);
 }
 
@@ -241,7 +266,7 @@ function normalizeConstructionFeature(feature) {
     }
   }
 
-  const id = attrs.OBJECTID || attrs.ObjectId || attrs.FID || `construction_${Math.random().toString(36).slice(2, 10)}`;
+  const id = attrs.OBJECTID || attrs.ObjectId || attrs.FID || `construction_${(name + String(lat) + String(lng)).replace(/\s/g, '').slice(0, 20)}`;
   return { id: String(id), name, category: 'construction', lat, lng, subtitle, description, source: 'ottawa' };
 }
 
@@ -258,11 +283,11 @@ async function handleConstruction(req, res) {
 
   if (!resp.ok) {
     console.error(`ArcGIS RoadClosures error: HTTP ${resp.status}`);
-    return res.status(200).json([]);
+    return res.status(200).json({ data: [], source: 'unavailable' });
   }
 
   const data = await resp.json();
-  const results = (data.features || []).map(f => normalizeConstructionFeature(f)).filter(r => r.name);
+  const results = (data.features || []).map(f => normalizeConstructionFeature(f)).filter(r => r.name).filter(r => r.lat != null && r.lng != null && !isNaN(r.lat) && !isNaN(r.lng));
   constructionCached = results;
   constructionCachedAt = Date.now();
   return res.status(200).json(results);
@@ -270,7 +295,7 @@ async function handleConstruction(req, res) {
 
 // ── Parking ─────────────────────────────────────────────────────
 
-const PARKING_URL = 'https://open.ottawa.ca/api/explore/v2.1/catalog/datasets/parking-garage-availability/records?limit=20';
+const PARKING_URL = 'https://open.ottawa.ca/api/explore/v2.1/catalog/datasets/parking-garage-availability/records?limit=50';
 let parkingCached = null;
 let parkingCachedAt = 0;
 const PARKING_CACHE_TTL = 5 * 60 * 1000;
@@ -288,7 +313,7 @@ async function handleParking(req, res) {
 
   if (!resp.ok) {
     console.error(`Ottawa parking API error: HTTP ${resp.status}`);
-    return res.status(200).json([]);
+    return res.status(200).json({ data: [], source: 'unavailable' });
   }
 
   const data = await resp.json();
@@ -296,12 +321,15 @@ async function handleParking(req, res) {
     const total = r.total_capacity || r.capacity || 0;
     const available = r.available_spaces || r.available || 0;
     const percentFull = total > 0 ? Math.round(((total - available) / total) * 100) : null;
+    const name = r.garage_name || r.name || 'Garage';
+    const lat = r.geo_point_2d?.lat || r.latitude || null;
+    const lng = r.geo_point_2d?.lon || r.longitude || null;
     return {
-      id: r.garage_id || r.id || r.garage_name || `parking_${Math.random().toString(36).slice(2, 10)}`,
-      name: r.garage_name || r.name || 'Garage',
+      id: r.garage_id || r.id || r.garage_name || `parking_${(name + String(lat) + String(lng)).replace(/\s/g, '').slice(0, 20)}`,
+      name,
       category: 'parking',
-      lat: r.geo_point_2d?.lat || r.latitude || null,
-      lng: r.geo_point_2d?.lon || r.longitude || null,
+      lat,
+      lng,
       subtitle: r.address || '',
       available, total, percentFull,
       source: 'ottawa',
@@ -362,21 +390,84 @@ async function handleGas(req, res) {
     return res.status(200).json(result);
   } catch (err) {
     console.error('Gas price fetch failed:', err);
-    if (gasCachedResult) return res.status(200).json({ ...gasCachedResult, stale: true });
+    if (gasCachedResult) return res.status(200).json({ price: gasCachedResult.price, city: 'Ottawa', currency: 'CAD', unit: 'cents/L', source: 'NRCan', updated: gasCachedResult.updated, stations: [], stale: true });
     return res.status(500).json({ error: 'Could not fetch gas prices' });
   }
+}
+
+// ── Bike Share (VeloGo) ─────────────────────────────────────────
+
+let bikeShareCached = null;
+let bikeShareCachedAt = 0;
+const BIKE_SHARE_CACHE_TTL = 5 * 60 * 1000;
+
+async function handleBikeShare(req, res) {
+  res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=600');
+  if (bikeShareCached && Date.now() - bikeShareCachedAt < BIKE_SHARE_CACHE_TTL) {
+    return res.status(200).json(bikeShareCached);
+  }
+
+  const [infoResp, statusResp] = await Promise.all([
+    fetch('https://velogo.ca/opendata/station_information.json', {
+      headers: { 'User-Agent': 'RouteO/1.0' },
+      signal: AbortSignal.timeout(8000),
+    }),
+    fetch('https://velogo.ca/opendata/station_status.json', {
+      headers: { 'User-Agent': 'RouteO/1.0' },
+      signal: AbortSignal.timeout(8000),
+    }),
+  ]);
+
+  if (!infoResp.ok || !statusResp.ok) {
+    console.error(`VeloGo API error: info=${infoResp.status} status=${statusResp.status}`);
+    return res.status(502).json({ error: 'Bike share data unavailable' });
+  }
+
+  const infoData = await infoResp.json();
+  const statusData = await statusResp.json();
+
+  const stations = (infoData.data && infoData.data.stations) || [];
+  const statuses = (statusData.data && statusData.data.stations) || [];
+
+  const statusMap = new Map();
+  for (const s of statuses) {
+    statusMap.set(String(s.station_id), s);
+  }
+
+  const results = stations.map(station => {
+    const status = statusMap.get(String(station.station_id)) || {};
+    const bikesAvailable = status.num_bikes_available || 0;
+    const lat = station.lat || null;
+    const lng = station.lon || null;
+    const name = station.name || '';
+    return {
+      id: String(station.station_id),
+      name,
+      category: 'bike_share',
+      lat,
+      lng,
+      subtitle: `${bikesAvailable} bikes available`,
+      available: bikesAvailable,
+      total: station.capacity || 0,
+      source: 'ottawa',
+    };
+  }).filter(r => r.lat != null && r.lng != null && !isNaN(r.lat) && !isNaN(r.lng));
+
+  bikeShareCached = results;
+  bikeShareCachedAt = Date.now();
+  return res.status(200).json(results);
 }
 
 // ── Router ──────────────────────────────────────────────────────
 
 module.exports = async function handler(req, res) {
   if (await checkRateLimit(req, res)) return;
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Origin', process.env.ALLOWED_ORIGIN || '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   const { type } = req.query;
-  if (!type) return res.status(400).json({ error: 'Missing type param (foursquare|ottawa|construction|parking|gas)' });
+  if (!type) return res.status(400).json({ error: 'Missing type param (foursquare|ottawa|construction|parking|gas|bike_share)' });
 
   try {
     switch (type) {
@@ -385,6 +476,7 @@ module.exports = async function handler(req, res) {
       case 'construction': return await handleConstruction(req, res);
       case 'parking': return await handleParking(req, res);
       case 'gas': return await handleGas(req, res);
+      case 'bike_share': return await handleBikeShare(req, res);
       default: return res.status(400).json({ error: `Unknown type: ${type}` });
     }
   } catch (err) {
