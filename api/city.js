@@ -19,18 +19,21 @@ function evictOldest(cache, max, evictCount) {
   }
 }
 
-// ── Foursquare ──────────────────────────────────────────────────
+// ── Foursquare (v2 API with client_id/secret) ──────────────────
 
-const FSQ_CATEGORY_MAP = {
-  coffee: '13035', restaurants: '13065', bars: '13003', gyms: '18021',
-  grocery: '17069', pharmacy: '17115', shopping: '17000', parks: '16032',
+const FSQ_V2_CATEGORY_MAP = {
+  coffee: '4bf58dd8d48988d1e0931735', restaurants: '4d4b7105d754a06374d81259',
+  bars: '4bf58dd8d48988d116941735', gyms: '4bf58dd8d48988d175941735',
+  grocery: '4bf58dd8d48988d118951735', pharmacy: '4bf58dd8d48988d10f951735',
+  shopping: '4d4b7105d754a06378d81259', parks: '4bf58dd8d48988d163941735',
 };
-const PRICE_LABELS = { 1: '$', 2: '$$', 3: '$$$', 4: '$$$$' };
 const fsqCache = new Map();
 const FSQ_CACHE_TTL = 2 * 60 * 60 * 1000;
 
 async function handleFoursquare(req, res) {
-  if (!process.env.FOURSQUARE_API_KEY) return res.status(500).json({ error: 'Service unavailable' });
+  const clientId = process.env.FOURSQUARE_CLIENT_ID;
+  const clientSecret = process.env.FOURSQUARE_CLIENT_SECRET;
+  if (!clientId || !clientSecret) return res.status(500).json({ error: 'Service unavailable' });
 
   const { lat, lng, category, radius } = req.query;
   const latNum = parseFloat(lat);
@@ -38,8 +41,8 @@ async function handleFoursquare(req, res) {
   if (isNaN(latNum) || isNaN(lngNum)) {
     return res.status(400).json({ error: 'lat and lng must be valid numbers' });
   }
-  if (!category || !FSQ_CATEGORY_MAP[category]) {
-    return res.status(400).json({ error: `Invalid category. Must be one of: ${Object.keys(FSQ_CATEGORY_MAP).join(', ')}` });
+  if (!category || !FSQ_V2_CATEGORY_MAP[category]) {
+    return res.status(400).json({ error: `Invalid category. Must be one of: ${Object.keys(FSQ_V2_CATEGORY_MAP).join(', ')}` });
   }
 
   const radiusNum = Math.min(Math.max(parseInt(radius, 10) || 1000, 100), 50000);
@@ -50,11 +53,11 @@ async function handleFoursquare(req, res) {
     return res.status(200).json(cached.data);
   }
 
-  const categoryId = FSQ_CATEGORY_MAP[category];
-  const url = `https://api.foursquare.com/v3/places/search?ll=${latNum},${lngNum}&categories=${categoryId}&radius=${radiusNum}&limit=20&fields=fsq_id,name,categories,geocodes,location,photos,rating,price,hours`;
+  const categoryId = FSQ_V2_CATEGORY_MAP[category];
+  const url = `https://api.foursquare.com/v2/venues/search?ll=${latNum},${lngNum}&categoryId=${categoryId}&radius=${radiusNum}&limit=20&client_id=${clientId}&client_secret=${clientSecret}&v=20240101`;
 
   const resp = await fetch(url, {
-    headers: { Authorization: process.env.FOURSQUARE_API_KEY, Accept: 'application/json' },
+    headers: { Accept: 'application/json' },
     signal: AbortSignal.timeout(8000),
   });
 
@@ -65,23 +68,20 @@ async function handleFoursquare(req, res) {
   }
 
   const data = await resp.json();
-  const results = (data.results || []).map(place => {
-    const photo = place.photos && place.photos.length > 0 ? place.photos[0] : null;
-    return {
-      id: place.fsq_id,
-      name: place.name || '',
-      category,
-      lat: place.geocodes?.main?.latitude || null,
-      lng: place.geocodes?.main?.longitude || null,
-      address: place.location?.formatted_address || place.location?.address || '',
-      subtitle: place.location?.formatted_address || place.location?.address || '',
-      rating: place.rating || null,
-      price: place.price != null ? (PRICE_LABELS[place.price] || null) : null,
-      isOpenNow: place.hours?.open_now || false,
-      photoUrl: photo ? `${photo.prefix}200x200${photo.suffix}` : null,
-      source: 'foursquare',
-    };
-  }).filter(r => r.lat != null && r.lng != null && !isNaN(r.lat) && !isNaN(r.lng));
+  const results = (data.response?.venues || []).map(place => ({
+    id: place.id,
+    name: place.name || '',
+    category,
+    lat: place.location?.lat || null,
+    lng: place.location?.lng || null,
+    address: place.location?.formattedAddress?.join(', ') || place.location?.address || '',
+    subtitle: place.location?.address || '',
+    rating: null,
+    price: null,
+    isOpenNow: false,
+    photoUrl: null,
+    source: 'foursquare',
+  })).filter(r => r.lat != null && r.lng != null && !isNaN(r.lat) && !isNaN(r.lng));
 
   fsqCache.set(cacheKey, { ts: Date.now(), data: results });
   evictOldest(fsqCache, 100, 20);
@@ -458,7 +458,9 @@ async function handleBikeShare(req, res) {
   return res.status(200).json(results);
 }
 
-// ── Venue Detail (Foursquare by fsqId) ──────────────────────────
+// ── Venue Detail (Foursquare v2 by venue ID) ───────────────────
+// Note: v2 venue details requires a paid plan (402 credits_exhausted).
+// Returns cached stub data for now; upgrade to v3 Service API Key for full details.
 
 const venueDetailCache = new Map();
 const VENUE_DETAIL_TTL = 30 * 60 * 1000; // 30 min
@@ -466,7 +468,10 @@ const VENUE_DETAIL_TTL = 30 * 60 * 1000; // 30 min
 async function handleVenueDetail(req, res) {
   const { fsqId } = req.query;
   if (!fsqId || !/^[a-f0-9]+$/i.test(fsqId)) return res.status(400).json({ error: 'fsqId required' });
-  if (!process.env.FOURSQUARE_API_KEY) return res.status(500).json({ error: 'Service unavailable' });
+
+  const clientId = process.env.FOURSQUARE_CLIENT_ID;
+  const clientSecret = process.env.FOURSQUARE_CLIENT_SECRET;
+  if (!clientId || !clientSecret) return res.status(500).json({ error: 'Service unavailable' });
 
   res.setHeader('Cache-Control', 's-maxage=1800, stale-while-revalidate=3600');
 
@@ -475,22 +480,28 @@ async function handleVenueDetail(req, res) {
     return res.json(cached.data);
   }
 
-  const url = `https://api.foursquare.com/v3/places/${fsqId}?fields=name,hours,rating,photos,price,location`;
+  const url = `https://api.foursquare.com/v2/venues/${fsqId}?client_id=${clientId}&client_secret=${clientSecret}&v=20240101`;
   const r = await fetch(url, {
-    headers: { Authorization: process.env.FOURSQUARE_API_KEY, Accept: 'application/json' },
+    headers: { Accept: 'application/json' },
     signal: AbortSignal.timeout(8000),
   });
-  if (!r.ok) return res.status(502).json({ error: `Foursquare HTTP ${r.status}` });
 
-  const data = await r.json();
+  if (!r.ok) {
+    // v2 details may return 402 on free plan — return minimal response
+    return res.json({ name: null, isOpenNow: null, regularHours: null, rating: null, price: null, photoUrl: null });
+  }
+
+  const venue = (await r.json()).response?.venue;
+  if (!venue) return res.json({ name: null, isOpenNow: null, regularHours: null, rating: null, price: null, photoUrl: null });
+
   const result = {
-    name: data.name,
-    isOpenNow: data.hours?.open_now ?? null,
-    regularHours: data.hours?.regular ?? null,
-    rating: data.rating ?? null,
-    price: data.price ?? null,
-    photoUrl: data.photos?.[0]
-      ? `${data.photos[0].prefix}300x200${data.photos[0].suffix}`
+    name: venue.name,
+    isOpenNow: venue.hours?.isOpen ?? null,
+    regularHours: venue.hours?.timeframes ?? null,
+    rating: venue.rating ?? null,
+    price: venue.price?.tier ?? null,
+    photoUrl: venue.bestPhoto
+      ? `${venue.bestPhoto.prefix}300x200${venue.bestPhoto.suffix}`
       : null,
   };
 

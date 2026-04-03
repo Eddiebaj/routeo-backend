@@ -1,0 +1,776 @@
+[
+  {
+    "name": "Joey's Lansdowne",
+    "address": "825 Exhibition Way",
+    "type": [
+      "bar",
+      "restaurant"
+    ],
+    "lat": 45.3998,
+    "lng": -75.6844,
+    "fsqId": "552aafb8498e5d11808ced72",
+    "foursquareName": "JOEY Lansdowne",
+    "category": "Restaurant",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Joey's Rideau",
+    "address": "50 Rideau St",
+    "type": [
+      "bar",
+      "restaurant"
+    ],
+    "lat": 45.426,
+    "lng": -75.6916,
+    "isVerified": true,
+    "fsqId": "59372e23f1fdaf456f0c9409",
+    "foursquareName": "JOEY Rideau",
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Local Public Eatery",
+    "address": "825 Exhibition Way",
+    "type": [
+      "bar",
+      "restaurant"
+    ],
+    "lat": 45.3999,
+    "lng": -75.684,
+    "isVerified": true,
+    "fsqId": "59414511cf72a05e597432b2",
+    "foursquareName": "Local Lansdowne",
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Pour Boy",
+    "address": "495 Somerset St W",
+    "type": [
+      "bar",
+      "restaurant"
+    ],
+    "lat": 45.4138,
+    "lng": -75.7005,
+    "fsqId": "5190118c498e91f3c397aacd",
+    "foursquareName": "Pour Boy",
+    "category": "Bar",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Rabbit Hole",
+    "address": "208 Sparks St",
+    "type": [
+      "bar",
+      "restaurant",
+      "club"
+    ],
+    "lat": 45.4212,
+    "lng": -75.701,
+    "fsqId": "5c09953c1af852002c198160",
+    "foursquareName": "Rabbit Hole",
+    "category": "Cocktail Bar",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Whalesbone",
+    "address": "430 Bank St",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.4122,
+    "lng": -75.6939,
+    "fsqId": "4b789c4cf964a5200eda2ee3",
+    "foursquareName": "Whalesbone Oyster House",
+    "category": "Seafood Restaurant",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Lieutenant's Pump",
+    "address": "361 Elgin St",
+    "type": [
+      "restaurant",
+      "bar",
+      "club"
+    ],
+    "lat": 45.4153,
+    "lng": -75.6878,
+    "fsqId": "4b0586def964a520597222e3",
+    "foursquareName": "Lieutenant's Pump",
+    "category": "Pub",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "The Standard",
+    "address": "360 Elgin St",
+    "type": [
+      "restaurant",
+      "bar",
+      "club"
+    ],
+    "lat": 45.4153,
+    "lng": -75.6884,
+    "fsqId": "4b073355f964a52079f922e3",
+    "foursquareName": "The Standard Luxury Tavern",
+    "category": "Bar",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Heart and Crown ByWard",
+    "address": "67 Clarence St",
+    "type": [
+      "restaurant",
+      "bar",
+      "club"
+    ],
+    "lat": 45.429,
+    "lng": -75.6935,
+    "fsqId": "4ad8ec60f964a5200c1621e3",
+    "foursquareName": "Heart & Crown - ByWard Market",
+    "category": "Pub",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Heart and Crown Preston",
+    "address": "361 Preston St",
+    "type": [
+      "restaurant",
+      "bar",
+      "club"
+    ],
+    "lat": 45.4011,
+    "lng": -75.7096,
+    "fsqId": "4b3cc0baf964a520d48625e3",
+    "foursquareName": "Heart & Crown - Preston",
+    "category": "Pub",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Union Local 613",
+    "address": "315 Somerset St W",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.4161,
+    "lng": -75.6949,
+    "fsqId": "5005ecd7e4b0645daf340728",
+    "foursquareName": "Union Local 613",
+    "category": "Southern Food Restaurant",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Senate Bank",
+    "address": "259 Bank St",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.4162,
+    "lng": -75.6968,
+    "isVerified": false,
+    "reason": "wrong match removed"
+  },
+  {
+    "name": "Senate Clarence",
+    "address": "83 Clarence St",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.4293,
+    "lng": -75.6931,
+    "fsqId": "50aed23ae4b0d8a9ef9dcd04",
+    "foursquareName": "The Senate Sports Tavern & Eatery",
+    "category": "Sports Bar",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Senate Wellington",
+    "address": "93 Wellington St",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.4233,
+    "lng": -75.6987,
+    "isVerified": false,
+    "reason": "wrong match removed"
+  },
+  {
+    "name": "Barley Mow Merivale",
+    "address": "1541 Merivale Rd",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.3555,
+    "lng": -75.7352,
+    "fsqId": "5827c286089b755fe52f6954",
+    "foursquareName": "Barley Mow Merivale Road",
+    "category": "Pub",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Barley Mow Westboro",
+    "address": "399 Richmond Rd",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.391,
+    "lng": -75.7566,
+    "fsqId": "54ac7e16498ef7a42cd42c0b",
+    "foursquareName": "The Barley Mow",
+    "category": "Irish Pub",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Royal Oak Wellington",
+    "address": "1217 Wellington St W",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.4002,
+    "lng": -75.7313,
+    "fsqId": "4b08418df964a5207f0723e3",
+    "foursquareName": "Royal Oak",
+    "category": "Pub",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Royal Oak Bank",
+    "address": "188 Bank St",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.4178,
+    "lng": -75.6986,
+    "fsqId": "4b1b1169f964a52086f723e3",
+    "foursquareName": "Royal Oak",
+    "category": "Pub",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Royal Oak Slater",
+    "address": "180 Kent St",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.418,
+    "lng": -75.7017,
+    "fsqId": "4bc0acccabf49521769cbf93",
+    "foursquareName": "Royal Oak",
+    "category": "Pub",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Jack Astor's Lansdowne",
+    "address": "425 Marche Way",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.4008,
+    "lng": -75.683,
+    "fsqId": "551ecc37498e282ec09386bc",
+    "foursquareName": "Jack Astor's",
+    "category": "Restaurant",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Jack Astor's Hunt Club",
+    "address": "310 W Hunt Club Rd",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.3391,
+    "lng": -75.7129,
+    "isVerified": false,
+    "reason": "no match found"
+  },
+  {
+    "name": "Jack Astor's Kanata",
+    "address": "125 Roland Michener Dr",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.3085,
+    "lng": -75.9131,
+    "fsqId": "4b67496cf964a520f1452be3",
+    "foursquareName": "Jack Astor's Bar & Grill",
+    "category": "Bar",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Shore Club",
+    "address": "11 Colonel By Dr",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.425,
+    "lng": -75.6927,
+    "fsqId": "4ca92d1997c8a1cdbfa58ca5",
+    "foursquareName": "The Shore Club",
+    "category": "Seafood Restaurant",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Drip House",
+    "address": "692 Somerset St W",
+    "type": [
+      "bar"
+    ],
+    "lat": 45.411,
+    "lng": -75.7065,
+    "fsqId": "60f85ba01d6ca603569e8e81",
+    "foursquareName": "Drip House Chinatown",
+    "category": "Caf\u00e9",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Baton Rouge Downtown",
+    "address": "360 Albert St",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.4181,
+    "lng": -75.7038,
+    "fsqId": "4b197777f964a520d7dd23e3",
+    "foursquareName": "B\u00e2ton Rouge Grillhouse & Bar",
+    "category": "Restaurant",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Baton Rouge Hunt Club",
+    "address": "270 W Hunt Club Rd",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.3396,
+    "lng": -75.711,
+    "fsqId": "566f3e6f498eded04dd25d78",
+    "foursquareName": "B\u00e2ton Rouge Grillhouse & Bar",
+    "category": "Restaurant",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Baton Rouge Kanata",
+    "address": "790 Earl Grey Dr",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.3106,
+    "lng": -75.9095,
+    "fsqId": "4b26a070f964a520937e24e3",
+    "foursquareName": "B\u00e2ton Rouge Grillhouse & Bar",
+    "category": "Steakhouse",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Craft Beer Market",
+    "address": "975 Bank St",
+    "type": [
+      "bar"
+    ],
+    "lat": 45.3987,
+    "lng": -75.6856,
+    "fsqId": "5721372438fa52a01938e14e",
+    "foursquareName": "CRAFT Beer Market",
+    "category": "Beer Bar",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "The Waverly",
+    "address": "339 Elgin St",
+    "type": [
+      "bar",
+      "club"
+    ],
+    "lat": 45.415,
+    "lng": -75.688,
+    "fsqId": "5555a299498ec38e4f69398d",
+    "foursquareName": "The Waverly",
+    "category": null,
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "House of TARG",
+    "address": "1077 Bank St",
+    "type": [
+      "restaurant",
+      "bar",
+      "club"
+    ],
+    "lat": 45.3943,
+    "lng": -75.6832,
+    "fsqId": "51df648834561cc46c3e6ce3",
+    "foursquareName": "House of TARG",
+    "category": "Arcade",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Level One Game Pub",
+    "address": "14 Waller St",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.4262,
+    "lng": -75.6885,
+    "isVerified": true,
+    "fsqId": "56e61689498e951537d3f9ed",
+    "foursquareName": "Level One",
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Happy Fish",
+    "address": "330 Elgin St",
+    "type": [
+      "bar",
+      "club"
+    ],
+    "lat": 45.4153,
+    "lng": -75.6882,
+    "fsqId": "868f6fef88064d68e8563e15",
+    "foursquareName": "Happy Fish Ottawa",
+    "category": null,
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Gridworks",
+    "address": "221 Rideau St",
+    "type": [
+      "club"
+    ],
+    "lat": 45.428,
+    "lng": -75.689,
+    "isVerified": false,
+    "reason": "no match found"
+  },
+  {
+    "name": "City At Night",
+    "address": "222 Slater St",
+    "type": [
+      "club"
+    ],
+    "lat": 45.4186,
+    "lng": -75.7002,
+    "fsqId": "5834b21e13bb777f467bf1c5",
+    "foursquareName": "City At Night",
+    "category": "Night Club",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Hintonburg Public House",
+    "address": "1020 Wellington St W",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.397,
+    "lng": -75.727,
+    "isVerified": false,
+    "reason": "no match found"
+  },
+  {
+    "name": "Prohibition Public House",
+    "address": "337 Somerset St W",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.4159,
+    "lng": -75.6948,
+    "fsqId": "5764825e498e720858e533cf",
+    "foursquareName": "Prohibition Public House",
+    "category": "Gastropub",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Apothecary Lounge",
+    "address": "54 York St",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.428,
+    "lng": -75.694,
+    "isVerified": true,
+    "fsqId": "60e1f5740e501b1ba8b0ce39",
+    "foursquareName": "Apothecary",
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "ALORA Ottawa",
+    "address": "34 Clarence St",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.429,
+    "lng": -75.6937,
+    "fsqId": "653c4394a627d9780286fe61",
+    "foursquareName": "Alora",
+    "category": "Restaurant",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "10Fourteen",
+    "address": "1014 Wellington St W",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.3971,
+    "lng": -75.7265,
+    "isVerified": false,
+    "reason": "no match found"
+  },
+  {
+    "name": "The Gilmour",
+    "address": "313 Bank St",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.4165,
+    "lng": -75.6966,
+    "fsqId": "62e6a8440dd547639eb1f3f1",
+    "foursquareName": "The Gilmour",
+    "category": "Pub",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Grey's Social Eatery",
+    "address": "2 Byward Market Square",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.4274,
+    "lng": -75.693,
+    "fsqId": "693387684ee14103cd61a0f7",
+    "foursquareName": "Grey's Social Eatery",
+    "category": "Restaurant",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "The Clarendon Tavern",
+    "address": "11 George St",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.4284,
+    "lng": -75.6942,
+    "fsqId": "5d0c0233605f260023eb48a3",
+    "foursquareName": "The Clarendon Tavern",
+    "category": "Restaurant",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Pubwells on Preston",
+    "address": "96 Preston St",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.4023,
+    "lng": -75.7098,
+    "isVerified": false,
+    "reason": "wrong match removed"
+  },
+  {
+    "name": "Pubwells on Sussex",
+    "address": "431 Sussex Dr",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.432,
+    "lng": -75.6938,
+    "isVerified": true,
+    "fsqId": "68a917dfad353e75f9bafb71",
+    "foursquareName": "Pubwells on Sussex",
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Chuck's Roadhouse Barrhaven",
+    "address": "3777 Strandherd Dr",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.2741,
+    "lng": -75.7495,
+    "isVerified": false,
+    "reason": "no match found"
+  },
+  {
+    "name": "Chuck's Roadhouse Kanata",
+    "address": "425 Hazeldean Rd",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.3145,
+    "lng": -75.9142,
+    "isVerified": false,
+    "reason": "no match found"
+  },
+  {
+    "name": "The Bridge Public House",
+    "address": "1 Donald St",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.4305,
+    "lng": -75.6765,
+    "isVerified": false,
+    "reason": "no match found"
+  },
+  {
+    "name": "State and Main Barrhaven",
+    "address": "4235 Strandherd Dr",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.2635,
+    "lng": -75.7415,
+    "isVerified": false,
+    "reason": "no match found"
+  },
+  {
+    "name": "State and Main Gloucester",
+    "address": "1880 Ogilvie Rd",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.434,
+    "lng": -75.578,
+    "isVerified": false,
+    "reason": "no match found"
+  },
+  {
+    "name": "The Jolly Taxpayer",
+    "address": "3050 Woodroffe Ave",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.274,
+    "lng": -75.7652,
+    "isVerified": false,
+    "reason": "no match found"
+  },
+  {
+    "name": "The Bad Alibi",
+    "address": "5935 Jeanne D\\'Arc Blvd S",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.455,
+    "lng": -75.516,
+    "isVerified": false,
+    "reason": "no match found"
+  },
+  {
+    "name": "Corner Bar and Grill",
+    "address": "1779 Tenth Line Rd",
+    "type": [
+      "restaurant",
+      "bar"
+    ],
+    "lat": 45.474,
+    "lng": -75.511,
+    "isVerified": false,
+    "reason": "no match found"
+  },
+  {
+    "name": "REFORM Health + Fitness",
+    "address": "317 McRae Ave #300",
+    "type": [
+      "fitness"
+    ],
+    "lat": 45.3961,
+    "lng": -75.7497,
+    "fsqId": "695ff147f781bc7ec0c36303",
+    "foursquareName": "Reform Health & Fitness",
+    "category": "Gym and Studio",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Pure Yoga Westboro",
+    "address": "279 Richmond Rd",
+    "type": [
+      "fitness"
+    ],
+    "lat": 45.3935,
+    "lng": -75.752,
+    "fsqId": "4f627a88e4b06cb9f96eb58d",
+    "foursquareName": "Pure Yoga",
+    "category": "Yoga Studio",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  },
+  {
+    "name": "Pure Yoga Centretown",
+    "address": "359 Bank St",
+    "type": [
+      "fitness"
+    ],
+    "lat": 45.4143,
+    "lng": -75.695,
+    "fsqId": "52e2f414498e0872ec17bb2d",
+    "foursquareName": "Pure Yoga Centretown",
+    "category": "Yoga Studio",
+    "isVerified": true,
+    "lastVerified": "2026-04-03"
+  }
+]
