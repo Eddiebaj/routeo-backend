@@ -65,8 +65,28 @@ module.exports = async function handler(req, res) {
 
     const data = await resp.json();
 
+    // Extract events with lat/lng from venue data
+    const events = (data._embedded?.events || []).map(ev => {
+      const venue = ev._embedded?.venues?.[0] || {};
+      const loc = venue.location || {};
+      return {
+        id: ev.id,
+        name: ev.name,
+        date: ev.dates?.start?.localDate || '',
+        time: ev.dates?.start?.localTime || '',
+        venue: venue.name || '',
+        lat: loc.latitude ? parseFloat(loc.latitude) : null,
+        lng: loc.longitude ? parseFloat(loc.longitude) : null,
+        url: ev.url || '',
+        imageUrl: ev.images?.[0]?.url || '',
+        category: ev.classifications?.[0]?.segment?.name || '',
+      };
+    });
+
+    const result = { events, totalElements: data.page?.totalElements || events.length };
+
     // Cache the response
-    tmCache[cacheKey] = data;
+    tmCache[cacheKey] = result;
     tmCacheTs[cacheKey] = Date.now();
 
     // Limit cache size: keep at most 50 entries
@@ -79,7 +99,7 @@ module.exports = async function handler(req, res) {
       }
     }
 
-    return res.json(data);
+    return res.json(result);
   } catch (err) {
     console.error('Ticketmaster proxy error:', err);
     return res.status(500).json({ error: 'Internal server error' });

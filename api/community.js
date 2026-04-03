@@ -495,6 +495,24 @@ module.exports = async (req, res) => {
           }
         }
 
+        // Geocode venue name for map pin
+        let lat = null, lng = null;
+        try {
+          const geoResp = await fetch(
+            `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(venue_name + ' Ottawa Canada')}&format=json&limit=1`,
+            { headers: { 'User-Agent': 'RouteO/1.0' }, signal: AbortSignal.timeout(5000) }
+          );
+          if (geoResp.ok) {
+            const geoData = await geoResp.json();
+            if (geoData[0]) {
+              lat = parseFloat(geoData[0].lat);
+              lng = parseFloat(geoData[0].lon);
+            }
+          }
+        } catch (e) {
+          console.error('Deal geocode error:', e);
+        }
+
         // Moderate with Claude
         const moderation = await moderateDealWithClaude(
           sanitize(venue_name),
@@ -514,6 +532,8 @@ module.exports = async (req, res) => {
             deal_description: sanitize(deal_description),
             device_id: dsDeviceId,
             photo_url: photoUrl,
+            lat,
+            lng,
             approved: autoApprove,
             moderation_confidence: moderation.confidence || 0,
             moderation_reason: sanitize(moderation.reason || ''),
