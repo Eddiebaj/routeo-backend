@@ -458,6 +458,47 @@ async function handleBikeShare(req, res) {
   return res.status(200).json(results);
 }
 
+// ── Venue Detail (Foursquare by fsqId) ──────────────────────────
+
+const venueDetailCache = new Map();
+const VENUE_DETAIL_TTL = 30 * 60 * 1000; // 30 min
+
+async function handleVenueDetail(req, res) {
+  const { fsqId } = req.query;
+  if (!fsqId || !/^[a-f0-9]+$/i.test(fsqId)) return res.status(400).json({ error: 'fsqId required' });
+  if (!process.env.FOURSQUARE_API_KEY) return res.status(500).json({ error: 'Service unavailable' });
+
+  res.setHeader('Cache-Control', 's-maxage=1800, stale-while-revalidate=3600');
+
+  const cached = venueDetailCache.get(fsqId);
+  if (cached && Date.now() - cached.ts < VENUE_DETAIL_TTL) {
+    return res.json(cached.data);
+  }
+
+  const url = `https://api.foursquare.com/v3/places/${fsqId}?fields=name,hours,rating,photos,price,location`;
+  const r = await fetch(url, {
+    headers: { Authorization: process.env.FOURSQUARE_API_KEY, Accept: 'application/json' },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!r.ok) return res.status(502).json({ error: `Foursquare HTTP ${r.status}` });
+
+  const data = await r.json();
+  const result = {
+    name: data.name,
+    isOpenNow: data.hours?.open_now ?? null,
+    regularHours: data.hours?.regular ?? null,
+    rating: data.rating ?? null,
+    price: data.price ?? null,
+    photoUrl: data.photos?.[0]
+      ? `${data.photos[0].prefix}300x200${data.photos[0].suffix}`
+      : null,
+  };
+
+  venueDetailCache.set(fsqId, { ts: Date.now(), data: result });
+  evictOldest(venueDetailCache, 200, 50);
+  return res.json(result);
+}
+
 // ── Router ──────────────────────────────────────────────────────
 
 module.exports = async function handler(req, res) {
@@ -467,7 +508,7 @@ module.exports = async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   const { type } = req.query;
-  if (!type) return res.status(400).json({ error: 'Missing type param (foursquare|ottawa|construction|parking|gas|bike_share)' });
+  if (!type) return res.status(400).json({ error: 'Missing type param (foursquare|ottawa|construction|parking|gas|bike_share|venue_detail)' });
 
   try {
     switch (type) {
@@ -477,6 +518,7 @@ module.exports = async function handler(req, res) {
       case 'parking': return await handleParking(req, res);
       case 'gas': return await handleGas(req, res);
       case 'bike_share': return await handleBikeShare(req, res);
+      case 'venue_detail': return await handleVenueDetail(req, res);
       default: return res.status(400).json({ error: `Unknown type: ${type}` });
     }
   } catch (err) {
