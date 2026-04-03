@@ -20,9 +20,10 @@ const { checkRateLimit } = require('./_rateLimit');
  *   GET  /api/community?action=transit_scores    — All neighbourhood scores
  *
  * Deal votes:
- *   POST /api/community?action=deal.vote         — Vote on a community deal
+ *   POST /api/community?action=deal.submit        — Submit deal with optional photo + Claude moderation
+ *   POST /api/community?action=deal.vote          — Vote on a community deal
  *   GET  /api/community?action=deal.votes&neighbourhood_id=X — Get votes for deals
- *   POST /api/community?action=deal.notify       — Log new deal submission (admin notification)
+ *   POST /api/community?action=deal.notify        — Log new deal submission (admin notification)
  *
  * Crowding:
  *   POST /api/community?action=crowding.report   — Submit a crowding report
@@ -35,11 +36,65 @@ const { checkRateLimit } = require('./_rateLimit');
  */
 
 const { createClient } = require('@supabase/supabase-js');
+const Anthropic = require('@anthropic-ai/sdk');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
 );
+
+// ── Claude deal moderation ──────────────────────────────────────────
+async function moderateDealWithClaude(venueName, description, photoBase64) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return { approved: false, confidence: 0, reason: 'Moderation unavailable', flags: ['no_api_key'] };
+
+  const client = new Anthropic({ apiKey });
+  const content = [];
+
+  if (photoBase64) {
+    content.push({
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/jpeg', data: photoBase64 },
+    });
+  }
+
+  content.push({
+    type: 'text',
+    text: `You are a content moderator for RouteO, an Ottawa transit & community app. Review this community deal submission and respond ONLY with valid JSON (no markdown).
+
+Venue: ${venueName}
+Deal: ${description}
+${photoBase64 ? 'A photo is attached.' : 'No photo attached.'}
+
+Check for:
+1. Is this a plausible deal at a real Ottawa business?
+2. Does the photo (if any) match the venue/deal described?
+3. Any inappropriate, offensive, or spam content?
+4. Any personal information, phone numbers, or suspicious URLs?
+
+Respond with JSON:
+{
+  "approved": true/false,
+  "confidence": 0-100,
+  "reason": "brief explanation",
+  "flags": ["flag1", "flag2"],
+  "category": "food_drink" | "retail" | "service" | "entertainment" | "other"
+}`,
+  });
+
+  try {
+    const resp = await client.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 300,
+      messages: [{ role: 'user', content }],
+    });
+    const text = resp.content[0]?.text || '';
+    return JSON.parse(text);
+  } catch (e) {
+    console.error('Claude moderation error:', e);
+    return { approved: false, confidence: 0, reason: 'Moderation error', flags: ['api_error'] };
+  }
+}
 
 function isValidDeviceId(id) {
   return typeof id === 'string' && id.length >= 5 && id.length <= 200;
@@ -398,6 +453,87 @@ module.exports = async (req, res) => {
           avg_crowding: Math.round(avgCrowding * 100) / 100,
           report_count: totalReports,
           confidence,
+        });
+      }
+
+      // ── Deal: Submit with optional photo + Claude moderation ──
+      case 'deal.submit': {
+        if (req.method !== 'POST') return res.status(405).json({ error: 'POST required' });
+        const { venue_name, deal_description, neighbourhood_id, device_id: dsDeviceId, photo_base64 } = req.body || {};
+        if (!isValidDeviceId(dsDeviceId)) {
+          return res.status(400).json({ error: 'Valid device_id required' });
+        }
+        if (checkDeviceCooldown(dsDeviceId, 'deal.submit', 60000)) {
+          return res.status(429).json({ error: 'Too many submissions, please wait' });
+        }
+        if (!venue_name || !deal_description || !neighbourhood_id) {
+          return res.status(400).json({ error: 'Missing venue_name, deal_description, or neighbourhood_id' });
+        }
+        if (venue_name.length > 100 || deal_description.length > 500) {
+          return res.status(400).json({ error: 'venue_name max 100 chars, deal_description max 500 chars' });
+        }
+        // Validate photo size (max ~2MB base64 ≈ 2.7M chars)
+        if (photo_base64 && photo_base64.length > 2800000) {
+          return res.status(400).json({ error: 'Photo too large (max 2MB)' });
+        }
+
+        // Upload photo to Supabase Storage if provided
+        let photoUrl = null;
+        if (photo_base64) {
+          try {
+            const buf = Buffer.from(photo_base64, 'base64');
+            const filename = `deals/${Date.now()}_${dsDeviceId.slice(0, 8)}.jpg`;
+            const { error: uploadErr } = await supabase.storage
+              .from('deal-photos')
+              .upload(filename, buf, { contentType: 'image/jpeg', upsert: false });
+            if (!uploadErr) {
+              const { data: urlData } = supabase.storage.from('deal-photos').getPublicUrl(filename);
+              photoUrl = urlData?.publicUrl || null;
+            }
+          } catch (e) {
+            console.error('Photo upload error:', e);
+          }
+        }
+
+        // Moderate with Claude
+        const moderation = await moderateDealWithClaude(
+          sanitize(venue_name),
+          sanitize(deal_description),
+          photo_base64 || null,
+        );
+
+        const autoApprove = moderation.approved && moderation.confidence > 85;
+        const needsReview = moderation.confidence >= 50 && moderation.confidence <= 85;
+        const rejected = moderation.confidence < 50 && !moderation.approved;
+
+        const { data: insertedDeal, error: insertErr } = await supabase
+          .from('community_deals')
+          .insert({
+            neighbourhood_id,
+            venue_name: sanitize(venue_name),
+            deal_description: sanitize(deal_description),
+            device_id: dsDeviceId,
+            photo_url: photoUrl,
+            approved: autoApprove,
+            moderation_confidence: moderation.confidence || 0,
+            moderation_reason: sanitize(moderation.reason || ''),
+            moderation_flags: moderation.flags || [],
+            category: moderation.category || 'other',
+          })
+          .select('id')
+          .single();
+
+        if (insertErr) throw insertErr;
+
+        const status = autoApprove ? 'approved' : rejected ? 'rejected' : 'pending_review';
+        console.log(`Deal ${insertedDeal?.id} moderated: ${status} (confidence: ${moderation.confidence})`);
+
+        return res.json({
+          ok: true,
+          deal_id: insertedDeal?.id,
+          status,
+          moderation_reason: moderation.reason,
+          photo_url: photoUrl,
         });
       }
 
