@@ -10,6 +10,7 @@
  * GET /api/cron-push?job=gameday   — game day alerts
  * GET /api/cron-push?job=lrt       — LRT disruption push
  * GET /api/cron-push?job=departures — arrival alerts for saved stops
+ * GET /api/cron-push?job=disruptions — bus route disruption alerts
  */
 
 const { createClient } = require('@supabase/supabase-js');
@@ -453,6 +454,103 @@ async function handleDepartures() {
 }
 
 
+// ── Job: Bus Route Disruption Alerts ─────────────────────────────
+
+async function handleDisruptions() {
+  const tokens = await getSubscribedTokens('routeDisruption');
+  if (!tokens.length) return { job: 'disruptions', sent: 0, reason: 'no subscribers' };
+
+  let alertsData;
+  try {
+    alertsData = await fetchJson('https://routeo-backend.vercel.app/api/alerts');
+  } catch (e) {
+    return { job: 'disruptions', sent: 0, error: 'Failed to fetch alerts' };
+  }
+
+  const alerts = alertsData.alerts || [];
+  // Filter for cancellations and detours only (high-impact)
+  const impactful = alerts.filter(a =>
+    ['cancellation', 'detour'].includes(a.category) &&
+    a.routes && a.routes.length > 0
+  );
+
+  if (!impactful.length) return { job: 'disruptions', sent: 0, reason: 'no impactful alerts' };
+
+  // Dedup: check which alerts we've already sent
+  const recentDescs = await getRecentlySentDescs();
+  const newAlerts = impactful.filter(a => !recentDescs.has(a.title));
+
+  if (!newAlerts.length) return { job: 'disruptions', sent: 0, reason: 'all alerts already sent' };
+
+  // Get all user route subscriptions to target notifications
+  const { data: routeSubs } = await supabase
+    .from('push_subscriptions')
+    .select('device_id, metadata')
+    .eq('type', 'routeDisruption')
+    .eq('enabled', true);
+
+  // Build device -> subscribed routes map
+  const deviceRoutes = {};
+  for (const sub of (routeSubs || [])) {
+    const routes = sub.metadata?.routes || [];
+    if (routes.length > 0) deviceRoutes[sub.device_id] = new Set(routes);
+  }
+
+  const deviceIds = Object.keys(deviceRoutes);
+  if (!deviceIds.length) {
+    // No route-specific subscriptions, send to all routeDisruption subscribers
+    // but limit to first 3 alerts
+    const messages = [];
+    for (const alert of newAlerts.slice(0, 3)) {
+      for (const t of tokens) {
+        const isFr = t.language === 'fr';
+        messages.push({
+          to: t.expo_token,
+          sound: 'default',
+          title: isFr ? `Alerte: Route ${alert.routes.join(', ')}` : `Alert: Route ${alert.routes.join(', ')}`,
+          body: alert.title.slice(0, 200),
+          data: { type: 'route_disruption', routes: alert.routes },
+        });
+      }
+    }
+    const result = await sendExpoPush(messages);
+    for (const a of newAlerts.slice(0, 3)) await recordSentDesc(a.title);
+    return { job: 'disruptions', ...result, newAlerts: newAlerts.length };
+  }
+
+  // Targeted notifications: only send to users subscribed to affected routes
+  const { data: allTokens } = await supabase
+    .from('push_tokens')
+    .select('expo_token, device_id, language')
+    .in('device_id', deviceIds);
+
+  const tokensByDevice = {};
+  for (const tok of (allTokens || [])) tokensByDevice[tok.device_id] = tok;
+
+  const messages = [];
+  for (const alert of newAlerts.slice(0, 5)) {
+    for (const [devId, routes] of Object.entries(deviceRoutes)) {
+      const affected = alert.routes.some(r => routes.has(r));
+      if (!affected) continue;
+      const tok = tokensByDevice[devId];
+      if (!tok) continue;
+      const isFr = tok.language === 'fr';
+      messages.push({
+        to: tok.expo_token,
+        sound: 'default',
+        title: isFr ? `Alerte: Route ${alert.routes.join(', ')}` : `Alert: Route ${alert.routes.join(', ')}`,
+        body: alert.title.slice(0, 200),
+        data: { type: 'route_disruption', routes: alert.routes },
+      });
+    }
+  }
+
+  const result = await sendExpoPush(messages);
+  for (const a of newAlerts.slice(0, 5)) await recordSentDesc(a.title);
+  return { job: 'disruptions', ...result, newAlerts: newAlerts.length };
+}
+
+
 // ── Handler ─────────────────────────────────────────────────────
 
 module.exports = async (req, res) => {
@@ -483,6 +581,10 @@ module.exports = async (req, res) => {
 
     if (job === 'departures' || job === 'all') {
       results.departures = await handleDepartures();
+    }
+
+    if (job === 'disruptions' || job === 'all') {
+      results.disruptions = await handleDisruptions();
     }
 
     return res.json({ ok: true, results, timestamp: new Date().toISOString() });
