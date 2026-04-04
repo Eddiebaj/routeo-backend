@@ -616,15 +616,8 @@ async function fetchStatic(stopId) {
     });
 }
 
-module.exports = async (req, res) => {
-  if (await checkRateLimit(req, res)) return;
-  res.setHeader('Access-Control-Allow-Origin', '*');
-
-  const rawStopId = req.query.stop || req.query.stopId;
-  if (!rawStopId) return res.status(400).json({ error: 'stop param required' });
-  // Strip leading zeros: "0322" → "322", but keep "0" as "0"
-  const stopId = rawStopId.replace(/^0+/, '') || rawStopId;
-
+// ── Core per-stop logic (returns response object) ─────────
+async function fetchArrivalsForStop(stopId) {
   const isSTO = isSTOStop(stopId);
 
   // Check GTFS data freshness (non-blocking)
@@ -641,7 +634,7 @@ module.exports = async (req, res) => {
     } catch (e) { console.warn('Freshness check error:', e.message); }
   })();
 
-  // Look up stop name (best-effort, non-blocking) — try requested ID first, then platforms
+  // Look up stop name (best-effort, non-blocking)
   let stopName = null;
   try {
     const { data: stopRow } = await supabase.from('stops').select('stop_name').eq('stop_id', stopId).single();
@@ -655,7 +648,7 @@ module.exports = async (req, res) => {
     }
   } catch (e) { console.warn('Stop name lookup error:', e.message); }
 
-  // ── Fetch ghost reports in parallel ────────────────────────
+  // Fetch ghost reports in parallel
   let ghostReports = {};
   const ghostPromise = (async () => {
     try {
@@ -683,7 +676,6 @@ module.exports = async (req, res) => {
     } catch (e) { console.warn('ghost aggregation failed:', e.message); }
   })();
 
-  // Helper to build response with optional data warning
   const buildResp = (base) => {
     if (dataWarning) base.dataWarning = dataWarning;
     return base;
@@ -692,60 +684,71 @@ module.exports = async (req, res) => {
   // ── STO stop flow ──────────────────────────────────────────
   if (isSTO) {
     try {
-      let stoArrivals = await fetchSTORealtime(stopId);
-      // Retry once after 2s if GTFS-RT returned empty
-      if (stoArrivals.length === 0) {
-        await new Promise(r => setTimeout(r, 2000));
-        stoArrivals = await fetchSTORealtime(stopId);
-        if (stoArrivals.length > 0) console.log(`[arrivals] STO GTFS-RT retry succeeded for stop ${stopId}`);
-      }
+      const stoArrivals = await fetchSTORealtime(stopId);
       if (stoArrivals.length > 0) {
         await Promise.all([ghostPromise, freshnessPromise]);
         const arrivals = stoArrivals.map(a => ({ ...a, source: 'sto-gtfs-rt' }));
-        return res.json(buildResp({ stop: stopId, stopName, arrivals, source: 'sto-gtfs-rt', agency: 'STO', ghostReports }));
+        return buildResp({ stop: stopId, stopName, arrivals, source: 'sto-gtfs-rt', agency: 'STO', ghostReports });
       }
       console.log(`[arrivals] STO GTFS-RT empty for stop ${stopId}, falling back to static`);
     } catch (err) {
       console.warn(`[arrivals] STO GTFS-RT failed for stop ${stopId}:`, err.message);
     }
-    // STO static fallback
     try {
       const staticArrivals = await fetchSTOStatic(stopId);
       const arrivals = staticArrivals.map(a => ({ ...a, source: 'sto-gtfs-static', agency: 'STO' }));
       await Promise.all([ghostPromise, freshnessPromise]);
-      return res.json(buildResp({ stop: stopId, stopName, arrivals, source: 'sto-gtfs-static', agency: 'STO', ghostReports }));
+      return buildResp({ stop: stopId, stopName, arrivals, source: 'sto-gtfs-static', agency: 'STO', ghostReports });
     } catch (err) {
       console.error('[arrivals] STO static fallback failed:', err.message);
-      return res.status(500).json({ error: 'Internal server error' });
+      return { stop: stopId, error: 'Internal server error' };
     }
   }
 
   // ── OC Transpo stop flow ───────────────────────────────────
   try {
-    let rtArrivals = await fetchRealtime(stopId);
-    // Retry once after 2s if GTFS-RT returned empty (transient feed gap)
-    if (rtArrivals.length === 0) {
-      await new Promise(r => setTimeout(r, 2000));
-      rtArrivals = await fetchRealtime(stopId);
-      if (rtArrivals.length > 0) console.log(`[arrivals] GTFS-RT retry succeeded for stop ${stopId}`);
-    }
+    const rtArrivals = await fetchRealtime(stopId);
     if (rtArrivals.length > 0) {
       await Promise.all([ghostPromise, freshnessPromise]);
       const arrivals = rtArrivals.map(a => ({ ...a, source: 'gtfs-rt' }));
-      return res.json(buildResp({ stop: stopId, stopName, arrivals, source: 'gtfs-rt', ghostReports }));
+      return buildResp({ stop: stopId, stopName, arrivals, source: 'gtfs-rt', ghostReports });
     }
     console.log(`[arrivals] GTFS-RT empty for stop ${stopId}, falling back to static`);
   } catch (err) {
     console.warn(`[arrivals] GTFS-RT failed for stop ${stopId}:`, err.message);
-    // Fall through to static
   }
 
   try {
     const staticArrivals = await fetchStatic(stopId);
     const arrivals = staticArrivals.map(a => ({ ...a, source: 'gtfs-static' }));
     await Promise.all([ghostPromise, freshnessPromise]);
-    return res.json(buildResp({ stop: stopId, stopName, arrivals, source: 'gtfs-static', ghostReports }));
+    return buildResp({ stop: stopId, stopName, arrivals, source: 'gtfs-static', ghostReports });
   } catch (err) {
-    return res.status(500).json({ error: 'Internal server error' });
+    return { stop: stopId, error: 'Internal server error' };
   }
+}
+
+// ── Main handler ──────────────────────────────────────────
+module.exports = async (req, res) => {
+  if (await checkRateLimit(req, res)) return;
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cache-Control', 'public, s-maxage=30, stale-while-revalidate=60');
+
+  // ── Batch mode: ?stops=3017,3000,9942 ───────────────────
+  const stopsParam = req.query.stops;
+  if (stopsParam) {
+    const ids = stopsParam.split(',').map(s => (s.trim().replace(/^0+/, '') || s.trim())).filter(Boolean).slice(0, 10);
+    if (ids.length === 0) return res.status(400).json({ error: 'stops param empty' });
+    const results = await Promise.all(ids.map(id => fetchArrivalsForStop(id)));
+    return res.json({ results });
+  }
+
+  // ── Single stop mode: ?stop=3017 ───────────────────────
+  const rawStopId = req.query.stop || req.query.stopId;
+  if (!rawStopId) return res.status(400).json({ error: 'stop param required' });
+  const stopId = rawStopId.replace(/^0+/, '') || rawStopId;
+
+  const result = await fetchArrivalsForStop(stopId);
+  if (result.error) return res.status(500).json(result);
+  return res.json(result);
 };

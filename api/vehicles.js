@@ -177,6 +177,7 @@ async function fetchOcVehicles(stopsMap, now, isDebug) {
 module.exports = async (req, res) => {
   if (await checkRateLimit(req, res)) return;
   res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cache-Control', 'public, s-maxage=30, stale-while-revalidate=60');
 
   try {
     const now = Math.floor(Date.now() / 1000);
