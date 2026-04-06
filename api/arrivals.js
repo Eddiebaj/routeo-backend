@@ -25,12 +25,6 @@ let stoTripsMap = {};      // { [trip_id]: headsign }
 let stoTripsLoadedAt = 0;  // timestamp of last load
 const STO_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
-// ── STO static schedule cache (stop_times, routes from GTFS ZIP) ──
-let stoStopTimesMap = {};   // { [stop_id]: [{arrival_time, trip_id}] }
-let stoRoutesMap = {};      // { [route_id]: route_short_name }
-let stoTripRouteMap = {};   // { [trip_id]: route_id }
-let stoStopTimesLoadedAt = 0;
-
 function parseCSVLine(line) {
   const fields = [];
   let current = '';
@@ -76,133 +70,112 @@ async function getSTOTripsMap() {
   return stoTripsMap;
 }
 
-// ── STO stop_times + routes (cached, loaded from GTFS ZIP) ──────
-async function getSTOStopTimes() {
-  if (Object.keys(stoStopTimesMap).length > 0 && Date.now() - stoStopTimesLoadedAt < STO_CACHE_TTL) {
-    return { stopTimes: stoStopTimesMap, routes: stoRoutesMap, tripRoutes: stoTripRouteMap };
-  }
-  try {
-    const resp = await fetch(STO_GTFS_ZIP_URL, { signal: AbortSignal.timeout(15000) });
-    if (!resp.ok) throw new Error(`STO GTFS zip HTTP ${resp.status}`);
-    const buf = Buffer.from(await resp.arrayBuffer());
-    const zip = new AdmZip(buf);
-
-    // Parse stop_times.txt
-    const stEntry = zip.getEntry('stop_times.txt');
-    if (!stEntry) throw new Error('stop_times.txt not found in STO GTFS zip');
-    const stLines = stEntry.getData().toString('utf8').trim().split('\n');
-    const stHeader = parseCSVLine(stLines[0].replace(/\r/g, ''));
-    const idxArrival = stHeader.indexOf('arrival_time');
-    const idxTrip = stHeader.indexOf('trip_id');
-    const idxStop = stHeader.indexOf('stop_id');
-    if (idxArrival < 0 || idxTrip < 0 || idxStop < 0) throw new Error('Required columns missing in stop_times.txt');
-
-    const newStopTimes = {};
-    for (let i = 1; i < stLines.length; i++) {
-      const cols = parseCSVLine(stLines[i].replace(/\r/g, ''));
-      const stopId = cols[idxStop];
-      const tripId = cols[idxTrip];
-      const arrTime = cols[idxArrival];
-      if (!stopId || !tripId || !arrTime) continue;
-      if (!newStopTimes[stopId]) newStopTimes[stopId] = [];
-      newStopTimes[stopId].push({ arrival_time: arrTime, trip_id: tripId });
-    }
-
-    // Parse trips.txt for trip_id → route_id
-    const trEntry = zip.getEntry('trips.txt');
-    const newTripRoutes = {};
-    if (trEntry) {
-      const trLines = trEntry.getData().toString('utf8').trim().split('\n');
-      const trHeader = parseCSVLine(trLines[0].replace(/\r/g, ''));
-      const idxTrTrip = trHeader.indexOf('trip_id');
-      const idxTrRoute = trHeader.indexOf('route_id');
-      if (idxTrTrip >= 0 && idxTrRoute >= 0) {
-        for (let i = 1; i < trLines.length; i++) {
-          const cols = parseCSVLine(trLines[i].replace(/\r/g, ''));
-          if (cols[idxTrTrip]) newTripRoutes[cols[idxTrTrip]] = cols[idxTrRoute] || '';
-        }
-      }
-    }
-
-    // Parse routes.txt for route_id → route_short_name
-    const rtEntry = zip.getEntry('routes.txt');
-    const newRoutes = {};
-    if (rtEntry) {
-      const rtLines = rtEntry.getData().toString('utf8').trim().split('\n');
-      const rtHeader = parseCSVLine(rtLines[0].replace(/\r/g, ''));
-      const idxRtId = rtHeader.indexOf('route_id');
-      const idxRtShort = rtHeader.indexOf('route_short_name');
-      if (idxRtId >= 0 && idxRtShort >= 0) {
-        for (let i = 1; i < rtLines.length; i++) {
-          const cols = parseCSVLine(rtLines[i].replace(/\r/g, ''));
-          if (cols[idxRtId]) newRoutes[cols[idxRtId]] = cols[idxRtShort] || cols[idxRtId];
-        }
-      }
-    }
-
-    stoStopTimesMap = newStopTimes;
-    stoTripRouteMap = newTripRoutes;
-    stoRoutesMap = newRoutes;
-    stoStopTimesLoadedAt = Date.now();
-    console.log(`STO stop_times loaded: ${Object.keys(newStopTimes).length} stops, ${Object.keys(newTripRoutes).length} trips, ${Object.keys(newRoutes).length} routes`);
-  } catch (err) {
-    console.error('STO stop_times load failed:', err.message);
-  }
-  return { stopTimes: stoStopTimesMap, routes: stoRoutesMap, tripRoutes: stoTripRouteMap };
-}
-
+// ── Fetch STO static schedule from Supabase (mirrors OC fetchStatic) ──
 async function fetchSTOStatic(stopId) {
-  const { stopTimes, routes, tripRoutes } = await getSTOStopTimes();
-
-  const entries = stopTimes[String(stopId)] || [];
-  if (!entries.length) return [];
-
   const ottawaNow = new Date().toLocaleTimeString('en-CA', { timeZone: 'America/Toronto', hour12: false });
   const [h, m] = ottawaNow.split(':').map(Number);
   const currentMins = h * 60 + m;
   const maxMins = currentMins + 90;
-
-  // After-midnight support (same as OC fetchStatic)
   const isAfterMidnight = h < 4;
   const afterMidnightCurrentMins = isAfterMidnight ? currentMins + 1440 : 0;
   const afterMidnightMaxMins = isAfterMidnight ? afterMidnightCurrentMins + 90 : 0;
+  console.log(`[fetchSTOStatic] stopId=${stopId}, ottawaNow=${ottawaNow}, currentMins=${currentMins}, maxMins=${maxMins}${isAfterMidnight ? `, afterMidnight=${afterMidnightCurrentMins}-${afterMidnightMaxMins}` : ''}`);
 
-  // Filter entries by time window
-  const inWindow = entries
-    .map(e => ({ ...e, mins: timeToMins(e.arrival_time) }))
-    .filter(e =>
-      (e.mins >= currentMins && e.mins <= maxMins) ||
-      (isAfterMidnight && e.mins >= afterMidnightCurrentMins && e.mins <= afterMidnightMaxMins)
-    );
+  const fmtTime = (mins) => {
+    const hh = String(Math.floor(mins / 60)).padStart(2, '0');
+    const mm = String(mins % 60).padStart(2, '0');
+    return `${hh}:${mm}:00`;
+  };
+  const timeFrom = fmtTime(currentMins);
+  const timeTo = fmtTime(maxMins);
 
-  // Sort by arrival time
-  inWindow.sort((a, b) => a.mins - b.mins);
+  // Query Supabase stop_times filtered by agency='STO'
+  let allData = [];
+  const { data: rows, error: err } = await supabase
+    .from('stop_times')
+    .select('arrival_time, route_id, headsign, service_id, trip_id, stop_id')
+    .eq('stop_id', stopId)
+    .eq('agency', 'STO')
+    .gte('arrival_time', timeFrom)
+    .lte('arrival_time', timeTo)
+    .order('arrival_time', { ascending: true })
+    .limit(200)
+    .abortSignal(AbortSignal.timeout(5000));
+  if (err) throw new Error(err.message);
+  if (rows) allData.push(...rows);
 
-  // Deduplicate by route, limit to 8
-  const seen = new Set();
-  const results = [];
-  for (const e of inWindow) {
-    const routeId = tripRoutes[e.trip_id] || '';
-    const routeShort = routes[routeId] || routeId;
-    const dedupKey = routeShort || e.trip_id;
-    if (seen.has(dedupKey)) continue;
-    seen.add(dedupKey);
-
-    // Resolve headsign from stoTripsMap (already loaded by getSTOTripsMap or from cache)
-    const headsign = cleanHeadsign(stoTripsMap[e.trip_id] || '', routeShort);
-
-    results.push({
-      stopId,
-      routeId: routeShort,
-      tripId: e.trip_id,
-      headsign,
-      scheduledTime: e.arrival_time,
-      minsAway: isAfterMidnight && e.mins >= 1440 ? e.mins - afterMidnightCurrentMins : e.mins - currentMins,
-    });
-    if (results.length >= 8) break;
+  // After-midnight: also query 24+ hour range
+  if (isAfterMidnight) {
+    const amFrom = fmtTime(afterMidnightCurrentMins);
+    const amTo = fmtTime(afterMidnightMaxMins);
+    const { data: amRows, error: amErr } = await supabase
+      .from('stop_times')
+      .select('arrival_time, route_id, headsign, service_id, trip_id, stop_id')
+      .eq('stop_id', stopId)
+      .eq('agency', 'STO')
+      .gte('arrival_time', amFrom)
+      .lte('arrival_time', amTo)
+      .order('arrival_time', { ascending: true })
+      .limit(100)
+      .abortSignal(AbortSignal.timeout(5000));
+    if (!amErr && amRows) allData.push(...amRows);
   }
 
-  return results;
+  allData.sort((a, b) => (a.arrival_time || '').localeCompare(b.arrival_time || ''));
+  console.log(`[fetchSTOStatic] raw rows for stop ${stopId}: ${allData.length}`);
+
+  const allRows = allData.map(row => ({ ...row, mins: timeToMins(row.arrival_time) }));
+  const inWindow = allRows.filter(row =>
+    (row.mins >= currentMins && row.mins <= maxMins) ||
+    (isAfterMidnight && row.mins >= afterMidnightCurrentMins && row.mins <= afterMidnightMaxMins)
+  );
+
+  // Filter by service day
+  const todayKeyword = getTodayServiceKeyword();
+  const yesterdayKeyword = getYesterdayServiceKeyword();
+  let finalRows = inWindow.filter(row => {
+    if (row.mins >= 1440) {
+      return row.service_id ? row.service_id.toLowerCase().includes(yesterdayKeyword) : true;
+    }
+    return row.service_id ? row.service_id.toLowerCase().includes(todayKeyword) : true;
+  });
+  console.log(`[fetchSTOStatic] rows matching service: ${finalRows.length}`);
+
+  // Enrich headsigns from trips table
+  const tripIds = [...new Set(finalRows.map(r => r.trip_id).filter(Boolean))];
+  let tripsMap = {};
+  if (tripIds.length > 0) {
+    try {
+      const { data: tripData } = await supabase
+        .from('trips')
+        .select('trip_id, headsign, route_id')
+        .in('trip_id', tripIds)
+        .abortSignal(AbortSignal.timeout(5000));
+      if (tripData) for (const t of tripData) tripsMap[t.trip_id] = t;
+    } catch (e) { console.warn('STO trips lookup timed out:', e.message); }
+  }
+
+  // Deduplicate by route + arrival time
+  const seen = new Set();
+  return finalRows
+    .filter(row => {
+      const key = `${row.route_id}-${row.arrival_time}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 8)
+    .map(row => {
+      const trip = tripsMap[row.trip_id] || {};
+      return {
+        stopId,
+        routeId: row.route_id,
+        tripId: row.trip_id,
+        headsign: cleanHeadsign(trip.headsign || row.headsign || '', row.route_id),
+        scheduledTime: row.arrival_time,
+        minsAway: (isAfterMidnight && row.mins >= 1440) ? row.mins - afterMidnightCurrentMins : row.mins - currentMins,
+      };
+    });
 }
 
 // ── STO stop detection ─────────────────────────────────────────
