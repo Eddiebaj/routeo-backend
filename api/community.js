@@ -33,6 +33,9 @@ const { checkRateLimit } = require('./_rateLimit');
  *   POST /api/community?action=ghost.report       — Submit ghost bus / confirmed arrival
  *   GET  /api/community?action=ghost.stats&stop_id=X — Aggregated ghost reports (last 60min)
  *   GET  /api/community?action=ghost.device_stats&device_id=X — Weekly stats for device
+ *
+ * Health:
+ *   GET  /api/community?action=health              — Health check (no auth required)
  */
 
 const { createClient } = require('@supabase/supabase-js');
@@ -691,6 +694,28 @@ module.exports = async (req, res) => {
           totalThisWeek: rows.length,
           mostAffectedRoute: mostAffected,
           mostAffectedCount: maxCount,
+        });
+      }
+
+      // ── Health check ─────────────────────────────────────────────
+      case 'health': {
+        let supabaseOk = false;
+        try {
+          const healthCheck = await Promise.race([
+            supabase.from('stops').select('stop_id').limit(1),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000)),
+          ]);
+          supabaseOk = !healthCheck.error;
+        } catch (e) {
+          supabaseOk = false;
+        }
+
+        return res.json({
+          status: 'ok',
+          uptime: process.uptime(),
+          timestamp: new Date().toISOString(),
+          supabase: supabaseOk,
+          version: '1.0.0',
         });
       }
 

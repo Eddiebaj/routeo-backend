@@ -24,6 +24,25 @@ const RT_TTL = 30000; // 30 seconds
 // { [stopId]: { arrivals: [{routeId, tripId, minsAway}], ts: timestamp } }
 const prevArrivalsCache = {};
 const PREV_CACHE_TTL = 120000; // 2 minutes — matches ~4 refresh cycles
+const PREV_CACHE_MAX = 500; // max stops tracked — prune oldest beyond this
+
+function pruneArrivalsCache() {
+  const keys = Object.keys(prevArrivalsCache);
+  if (keys.length <= PREV_CACHE_MAX) return;
+  const now = Date.now();
+  // First pass: remove expired entries
+  for (const k of keys) {
+    if (now - prevArrivalsCache[k].ts > PREV_CACHE_TTL) delete prevArrivalsCache[k];
+  }
+  // Second pass: if still over limit, remove oldest
+  const remaining = Object.keys(prevArrivalsCache);
+  if (remaining.length > PREV_CACHE_MAX) {
+    remaining.sort((a, b) => prevArrivalsCache[a].ts - prevArrivalsCache[b].ts);
+    for (let i = 0; i < remaining.length - PREV_CACHE_MAX; i++) {
+      delete prevArrivalsCache[remaining[i]];
+    }
+  }
+}
 
 // ── STO headsign lookup (cached in module scope, refreshed daily) ──
 let stoTripsMap = {};      // { [trip_id]: headsign }
@@ -67,7 +86,7 @@ async function getSTOTripsMap() {
     }
     stoTripsMap = map;
     stoTripsLoadedAt = Date.now();
-    console.log(`STO trips.txt loaded: ${Object.keys(map).length} trips`);
+    // STO trips.txt loaded silently
   } catch (err) {
     console.error('STO trips.txt load failed:', err.message);
     // Keep stale cache if available
@@ -84,7 +103,7 @@ async function fetchSTOStatic(stopId) {
   const isAfterMidnight = h < 4;
   const afterMidnightCurrentMins = isAfterMidnight ? currentMins + 1440 : 0;
   const afterMidnightMaxMins = isAfterMidnight ? afterMidnightCurrentMins + 90 : 0;
-  console.log(`[fetchSTOStatic] stopId=${stopId}, ottawaNow=${ottawaNow}, currentMins=${currentMins}, maxMins=${maxMins}${isAfterMidnight ? `, afterMidnight=${afterMidnightCurrentMins}-${afterMidnightMaxMins}` : ''}`);
+  // Debug: fetchSTOStatic params logged only in dev
 
   const fmtTime = (mins) => {
     const hh = String(Math.floor(mins / 60)).padStart(2, '0');
@@ -127,7 +146,7 @@ async function fetchSTOStatic(stopId) {
   }
 
   allData.sort((a, b) => (a.arrival_time || '').localeCompare(b.arrival_time || ''));
-  console.log(`[fetchSTOStatic] raw rows for stop ${stopId}: ${allData.length}`);
+  // fetchSTOStatic: raw row count suppressed in prod
 
   const allRows = allData.map(row => ({ ...row, mins: timeToMins(row.arrival_time) }));
   const inWindow = allRows.filter(row =>
@@ -144,7 +163,7 @@ async function fetchSTOStatic(stopId) {
     }
     return row.service_id ? row.service_id.toLowerCase().includes(todayKeyword) : true;
   });
-  console.log(`[fetchSTOStatic] rows matching service: ${finalRows.length}`);
+  // fetchSTOStatic: final row count suppressed in prod
 
   // Enrich headsigns from trips table
   const tripIds = [...new Set(finalRows.map(r => r.trip_id).filter(Boolean))];
@@ -353,6 +372,7 @@ async function fetchRealtime(stopId) {
         arrivalTime: t,
         departureTime: parseInt((stu.Departure || {}).Time || 0) || t,
         scheduleRelationship: stu.ScheduleRelationship || 'SCHEDULED',
+        agency: 'OC',
       });
     }
   }
@@ -484,7 +504,7 @@ async function fetchStatic(stopId) {
   const isAfterMidnight = h < 4;
   const afterMidnightCurrentMins = isAfterMidnight ? currentMins + 1440 : 0; // e.g., 1:30 AM = 1470
   const afterMidnightMaxMins = isAfterMidnight ? afterMidnightCurrentMins + 90 : 0;
-  console.log(`[fetchStatic] stopId=${stopId}, ottawaNow=${ottawaNow}, currentMins=${currentMins}, maxMins=${maxMins}${isAfterMidnight ? `, afterMidnight=${afterMidnightCurrentMins}-${afterMidnightMaxMins}` : ''}`);
+  // Debug: fetchStatic params suppressed in prod
 
   // Expand multi-platform stops (same as fetchRealtime)
   const stopIds = MULTI_PLATFORM_STOPS[stopId] || [stopId];
@@ -532,18 +552,16 @@ async function fetchStatic(stopId) {
   }
   // Sort merged results by arrival time
   allData.sort((a, b) => (a.arrival_time || '').localeCompare(b.arrival_time || ''));
-  const data = allData;
+  // fetchStatic: raw row count suppressed in prod
 
-  console.log(`[fetchStatic] raw rows for stop ${stopId} (${stopIds.length} platforms): ${(data || []).length}`);
-
-  const allRows = (data || []).map(row => ({ ...row, mins: timeToMins(row.arrival_time) }));
+  const allRows = allData.map(row => ({ ...row, mins: timeToMins(row.arrival_time) }));
   // Normal window: e.g., 14:00-15:30 (currentMins to maxMins)
   // After-midnight window: e.g., 1:30 AM = also check 25:30 (1470-1560) from previous day's service
   const inWindow = allRows.filter(row =>
     (row.mins >= currentMins && row.mins <= maxMins) ||
     (isAfterMidnight && row.mins >= afterMidnightCurrentMins && row.mins <= afterMidnightMaxMins)
   );
-  console.log(`[fetchStatic] rows in time window: ${inWindow.length}`);
+  // fetchStatic: time window count suppressed in prod
 
   // Filter by service: normal-range trips match today's service,
   // after-midnight trips (mins >= 1440) match yesterday's service
@@ -556,7 +574,7 @@ async function fetchStatic(stopId) {
     }
     return row.service_id ? row.service_id.toLowerCase().includes(todayKeyword) : true;
   });
-  console.log(`[fetchStatic] rows matching service: ${finalRows.length}`);
+  // fetchStatic: service match count suppressed in prod
 
   const tripIds = [...new Set(finalRows.map(r => r.trip_id).filter(Boolean))];
   let tripsMap = {};
@@ -746,6 +764,7 @@ async function fetchArrivalsForStop(stopId) {
       arrivals: (base.arrivals || []).map(a => ({ routeId: a.routeId, tripId: a.tripId, minsAway: a.minsAway })),
       ts: Date.now(),
     };
+    pruneArrivalsCache();
 
     return base;
   };
@@ -759,7 +778,7 @@ async function fetchArrivalsForStop(stopId) {
         const arrivals = stoArrivals.map(a => ({ ...a, source: 'sto-gtfs-rt' }));
         return buildResp({ stop: stopId, stopName, arrivals, source: 'sto-gtfs-rt', agency: 'STO', ghostReports });
       }
-      console.log(`[arrivals] STO GTFS-RT empty for stop ${stopId}, falling back to static`);
+      // STO GTFS-RT empty, falling back to static
     } catch (err) {
       console.warn(`[arrivals] STO GTFS-RT failed for stop ${stopId}:`, err.message);
     }
@@ -784,7 +803,7 @@ async function fetchArrivalsForStop(stopId) {
         const arrivals = rtArrivals.map(a => ({ ...a, source: 'gtfs-rt' }));
         return buildResp({ stop: stopId, stopName, arrivals, source: 'gtfs-rt', ghostReports });
       }
-      console.log(`[arrivals] GTFS-RT empty for stop ${stopId}, falling back to static`);
+      // OC GTFS-RT empty, falling back to static
     } catch (err) {
       console.warn(`[arrivals] GTFS-RT failed for stop ${stopId}:`, err.message);
     }
@@ -802,8 +821,19 @@ async function fetchArrivalsForStop(stopId) {
   }
 }
 
+// ── Fire-and-forget request logging ───────────────────────
+function logRequest(stopId, source, latencyMs) {
+  supabase
+    .from('api_logs')
+    .insert({ endpoint: 'arrivals', stop_id: stopId, source, latency_ms: latencyMs, created_at: new Date().toISOString() })
+    .abortSignal(AbortSignal.timeout(3000))
+    .then(() => {})
+    .catch(() => {});
+}
+
 // ── Main handler ──────────────────────────────────────────
 module.exports = async (req, res) => {
+  const startTime = Date.now();
   if (await checkRateLimit(req, res)) return;
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cache-Control', 'public, s-maxage=30, stale-while-revalidate=60');
@@ -815,7 +845,9 @@ module.exports = async (req, res) => {
     if (ids.length === 0) return res.status(400).json({ error: 'stops param empty' });
     if (ids.length > 10) return res.status(400).json({ error: 'Too many stops', max: 10, received: ids.length });
     const results = await Promise.all(ids.map(id => fetchArrivalsForStop(id)));
-    return res.json({ results });
+    res.json({ results });
+    logRequest(ids.join(','), 'batch', Date.now() - startTime);
+    return;
   }
 
   // ── Single stop mode: ?stop=3017 ───────────────────────
@@ -825,5 +857,6 @@ module.exports = async (req, res) => {
 
   const result = await fetchArrivalsForStop(stopId);
   if (result.error) return res.status(500).json(result);
-  return res.json(result);
+  res.json(result);
+  logRequest(stopId, result.source || 'unknown', Date.now() - startTime);
 };
