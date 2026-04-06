@@ -637,6 +637,39 @@ async function fetchArrivalsForStop(stopId) {
     }
   } catch (e) { console.warn('Stop name lookup error:', e.message); }
 
+  // Fetch route reliability stats in parallel (last 30 days)
+  let reliability = {};
+  const reliabilityPromise = (async () => {
+    try {
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      const query = supabase
+        .from('route_reliability')
+        .select('route_id, delta_minutes')
+        .eq('stop_id', stopId)
+        .gte('created_at', thirtyDaysAgo)
+        .limit(2000)
+        .abortSignal(AbortSignal.timeout(4000));
+      const { data, error } = await query;
+      if (error || !data || data.length === 0) return;
+      const grouped = {};
+      for (const row of data) {
+        if (!grouped[row.route_id]) grouped[row.route_id] = { onTime: 0, total: 0, totalDelay: 0 };
+        grouped[row.route_id].total++;
+        grouped[row.route_id].totalDelay += (row.delta_minutes || 0);
+        if (Math.abs(row.delta_minutes || 0) <= 3) grouped[row.route_id].onTime++;
+      }
+      for (const [routeId, stats] of Object.entries(grouped)) {
+        if (stats.total >= 5) {
+          reliability[routeId] = {
+            onTimePercent: Math.round((stats.onTime / stats.total) * 100),
+            avgDelay: +(stats.totalDelay / stats.total).toFixed(1),
+            sampleSize: stats.total,
+          };
+        }
+      }
+    } catch (e) { console.warn('reliability query failed:', e.message); }
+  })();
+
   // Fetch ghost reports in parallel
   let ghostReports = {};
   const ghostPromise = (async () => {
@@ -688,6 +721,7 @@ async function fetchArrivalsForStop(stopId) {
 
   const buildResp = (base) => {
     if (dataWarning) base.dataWarning = dataWarning;
+    if (Object.keys(reliability).length > 0) base.reliability = reliability;
     assignConfidence(base.arrivals || []);
 
     // Ghost bus auto-detection: compare current arrivals to previous snapshot
@@ -721,7 +755,7 @@ async function fetchArrivalsForStop(stopId) {
     try {
       const stoArrivals = await fetchSTORealtime(stopId);
       if (stoArrivals.length > 0) {
-        await Promise.all([ghostPromise, freshnessPromise]);
+        await Promise.all([ghostPromise, freshnessPromise, reliabilityPromise]);
         const arrivals = stoArrivals.map(a => ({ ...a, source: 'sto-gtfs-rt' }));
         return buildResp({ stop: stopId, stopName, arrivals, source: 'sto-gtfs-rt', agency: 'STO', ghostReports });
       }
@@ -732,7 +766,7 @@ async function fetchArrivalsForStop(stopId) {
     try {
       const staticArrivals = await fetchSTOStatic(stopId);
       const arrivals = staticArrivals.map(a => ({ ...a, source: 'sto-gtfs-static', agency: 'STO' }));
-      await Promise.all([ghostPromise, freshnessPromise]);
+      await Promise.all([ghostPromise, freshnessPromise, reliabilityPromise]);
       return buildResp({ stop: stopId, stopName, arrivals, source: 'sto-gtfs-static', agency: 'STO', ghostReports });
     } catch (err) {
       console.error('[arrivals] STO static fallback failed:', err.message);
@@ -746,7 +780,7 @@ async function fetchArrivalsForStop(stopId) {
     try {
       const rtArrivals = await fetchRealtime(stopId);
       if (rtArrivals.length > 0) {
-        await Promise.all([ghostPromise, freshnessPromise]);
+        await Promise.all([ghostPromise, freshnessPromise, reliabilityPromise]);
         const arrivals = rtArrivals.map(a => ({ ...a, source: 'gtfs-rt' }));
         return buildResp({ stop: stopId, stopName, arrivals, source: 'gtfs-rt', ghostReports });
       }
@@ -761,7 +795,7 @@ async function fetchArrivalsForStop(stopId) {
   try {
     const staticArrivals = await fetchStatic(stopId);
     const arrivals = staticArrivals.map(a => ({ ...a, source: 'gtfs-static' }));
-    await Promise.all([ghostPromise, freshnessPromise]);
+    await Promise.all([ghostPromise, freshnessPromise, reliabilityPromise]);
     return buildResp({ stop: stopId, stopName, arrivals, source: 'gtfs-static', ghostReports });
   } catch (err) {
     return { stop: stopId, error: 'Internal server error' };
