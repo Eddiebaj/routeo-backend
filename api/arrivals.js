@@ -337,7 +337,10 @@ async function fetchGtfsRtData() {
   });
   if (!resp.ok) throw new Error(`GTFS-RT ${resp.status}`);
   const data = await resp.json();
-  rtCache = { data, ts: Date.now() };
+  // Only cache if response has actual trip updates — don't poison cache with empty/truncated feeds
+  if (data?.Entity?.length > 0) {
+    rtCache = { data, ts: Date.now() };
+  }
   return data;
 }
 
@@ -417,7 +420,10 @@ async function fetchSTORealtime(stopId) {
   const tripsMapP = getSTOTripsMap();
 
   const stoUrl = buildStoUrl('trip');
-  if (!stoUrl) throw new Error('STO keys not configured');
+  if (!stoUrl) {
+    console.warn('STO keys not configured, skipping realtime');
+    return [];
+  }
   const resp = await fetch(stoUrl, {
     signal: AbortSignal.timeout(8000),
   });
@@ -525,7 +531,8 @@ async function fetchStatic(stopId) {
       .gte('arrival_time', timeFrom)
       .lte('arrival_time', timeTo)
       .order('arrival_time', { ascending: true })
-      .limit(200);
+      .limit(200)
+      .abortSignal(AbortSignal.timeout(5000));
     if (err) throw new Error(err.message);
     if (rows) allData.push(...rows);
 
@@ -540,7 +547,8 @@ async function fetchStatic(stopId) {
         .gte('arrival_time', amFrom)
         .lte('arrival_time', amTo)
         .order('arrival_time', { ascending: true })
-        .limit(100);
+        .limit(100)
+        .abortSignal(AbortSignal.timeout(5000));
       if (!amErr && amRows) allData.push(...amRows);
     }
   }
@@ -575,11 +583,14 @@ async function fetchStatic(stopId) {
   const tripIds = [...new Set(finalRows.map(r => r.trip_id).filter(Boolean))];
   let tripsMap = {};
   if (tripIds.length > 0) {
-    const { data: tripData } = await supabase
-      .from('trips')
-      .select('trip_id, headsign, route_id')
-      .in('trip_id', tripIds);
-    if (tripData) for (const t of tripData) tripsMap[t.trip_id] = t;
+    try {
+      const { data: tripData } = await supabase
+        .from('trips')
+        .select('trip_id, headsign, route_id')
+        .in('trip_id', tripIds)
+        .abortSignal(AbortSignal.timeout(5000));
+      if (tripData) for (const t of tripData) tripsMap[t.trip_id] = t;
+    } catch (e) { console.warn('trips lookup timed out:', e.message); }
   }
 
   // Normalize route_id for dedup: "1-350-1" → "1-350", "42-1" → "42"
@@ -706,16 +717,21 @@ async function fetchArrivalsForStop(stopId) {
   }
 
   // ── OC Transpo stop flow ───────────────────────────────────
-  try {
-    const rtArrivals = await fetchRealtime(stopId);
-    if (rtArrivals.length > 0) {
-      await Promise.all([ghostPromise, freshnessPromise]);
-      const arrivals = rtArrivals.map(a => ({ ...a, source: 'gtfs-rt' }));
-      return buildResp({ stop: stopId, stopName, arrivals, source: 'gtfs-rt', ghostReports });
+  // Skip realtime entirely if API key is missing — go straight to static
+  if (OC_KEY) {
+    try {
+      const rtArrivals = await fetchRealtime(stopId);
+      if (rtArrivals.length > 0) {
+        await Promise.all([ghostPromise, freshnessPromise]);
+        const arrivals = rtArrivals.map(a => ({ ...a, source: 'gtfs-rt' }));
+        return buildResp({ stop: stopId, stopName, arrivals, source: 'gtfs-rt', ghostReports });
+      }
+      console.log(`[arrivals] GTFS-RT empty for stop ${stopId}, falling back to static`);
+    } catch (err) {
+      console.warn(`[arrivals] GTFS-RT failed for stop ${stopId}:`, err.message);
     }
-    console.log(`[arrivals] GTFS-RT empty for stop ${stopId}, falling back to static`);
-  } catch (err) {
-    console.warn(`[arrivals] GTFS-RT failed for stop ${stopId}:`, err.message);
+  } else {
+    console.warn(`[arrivals] OC_TRANSPO_API_KEY not set, skipping realtime for stop ${stopId}`);
   }
 
   try {
@@ -737,8 +753,9 @@ module.exports = async (req, res) => {
   // ── Batch mode: ?stops=3017,3000,9942 ───────────────────
   const stopsParam = req.query.stops;
   if (stopsParam) {
-    const ids = stopsParam.split(',').map(s => (s.trim().replace(/^0+/, '') || s.trim())).filter(Boolean).slice(0, 10);
+    const ids = stopsParam.split(',').map(s => (s.trim().replace(/^0+/, '') || s.trim())).filter(Boolean);
     if (ids.length === 0) return res.status(400).json({ error: 'stops param empty' });
+    if (ids.length > 10) return res.status(400).json({ error: 'Too many stops', max: 10, received: ids.length });
     const results = await Promise.all(ids.map(id => fetchArrivalsForStop(id)));
     return res.json({ results });
   }
