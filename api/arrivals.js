@@ -20,6 +20,11 @@ const STO_GTFS_ZIP_URL = 'https://www.contenu.sto.ca/GTFS/GTFS.zip';
 let rtCache = { data: null, ts: 0 };
 const RT_TTL = 30000; // 30 seconds
 
+// ── Ghost bus detection: track previous arrivals per stop ──────
+// { [stopId]: { arrivals: [{routeId, tripId, minsAway}], ts: timestamp } }
+const prevArrivalsCache = {};
+const PREV_CACHE_TTL = 120000; // 2 minutes — matches ~4 refresh cycles
+
 // ── STO headsign lookup (cached in module scope, refreshed daily) ──
 let stoTripsMap = {};      // { [trip_id]: headsign }
 let stoTripsLoadedAt = 0;  // timestamp of last load
@@ -660,8 +665,54 @@ async function fetchArrivalsForStop(stopId) {
     } catch (e) { console.warn('ghost aggregation failed:', e.message); }
   })();
 
+  // Assign confidence level to each arrival based on source + rider verification
+  const assignConfidence = (arrivals) => {
+    // Count confirmed_arrived reports across all routes at this stop
+    let totalConfirmed = 0;
+    for (const rid of Object.keys(ghostReports)) {
+      totalConfirmed += (ghostReports[rid].confirmedCount || 0);
+    }
+    const riderVerified = totalConfirmed >= 2;
+
+    for (const a of arrivals) {
+      if (riderVerified) {
+        a.confidence = 'rider-verified';
+      } else if ((a.source === 'gtfs-rt' || a.source === 'sto-gtfs-rt') && rtCache.data && (Date.now() - rtCache.ts) < 60000) {
+        a.confidence = 'live';
+      } else {
+        a.confidence = 'scheduled';
+      }
+    }
+    return arrivals;
+  };
+
   const buildResp = (base) => {
     if (dataWarning) base.dataWarning = dataWarning;
+    assignConfidence(base.arrivals || []);
+
+    // Ghost bus auto-detection: compare current arrivals to previous snapshot
+    const prev = prevArrivalsCache[stopId];
+    if (prev && (Date.now() - prev.ts) < PREV_CACHE_TTL) {
+      const currentTripIds = new Set((base.arrivals || []).map(a => a.tripId).filter(Boolean));
+      const vanished = prev.arrivals.filter(
+        p => p.minsAway <= 5 && p.tripId && !currentTripIds.has(p.tripId)
+      );
+      if (vanished.length > 0) {
+        // Find the best next alternative (different route from the vanished one)
+        const vanishedRoutes = new Set(vanished.map(v => v.routeId));
+        const nextAlt = (base.arrivals || []).find(a => !vanishedRoutes.has(a.routeId));
+        base.ghostAlert = {
+          vanishedRoutes: vanished.map(v => ({ routeId: v.routeId, tripId: v.tripId, prevMinsAway: v.minsAway })),
+          nextAlternative: nextAlt ? { routeId: nextAlt.routeId, minsAway: nextAlt.minsAway, headsign: nextAlt.headsign } : null,
+        };
+      }
+    }
+    // Snapshot current arrivals for next comparison
+    prevArrivalsCache[stopId] = {
+      arrivals: (base.arrivals || []).map(a => ({ routeId: a.routeId, tripId: a.tripId, minsAway: a.minsAway })),
+      ts: Date.now(),
+    };
+
     return base;
   };
 
