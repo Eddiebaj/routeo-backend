@@ -36,7 +36,7 @@ const { checkRateLimit } = require('./_rateLimit');
  *
  * Business membership (B2B partner deals):
  *   POST /api/community?action=business.register  — Create/upsert business_member by email
- *   POST /api/community?action=business.onboard   — Update details + Claude moderation → is_active
+ *   POST /api/community?action=business.onboard   — Update details + Claude moderation (first call only); is_active requires Stripe subscription
  *   GET  /api/community?action=business.deals[&lat=X&lng=Y&radius=N] — Active partner deals
  *   POST /api/community?action=stripe.webhook     — Stripe subscription lifecycle (activate/deactivate)
  *
@@ -93,7 +93,7 @@ Respond with JSON:
 
   try {
     const resp = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 300,
       messages: [{ role: 'user', content }],
     });
@@ -719,7 +719,7 @@ module.exports = async (req, res) => {
         return res.json({ ok: true, id: biz.id, is_onboarded: biz.is_onboarded, is_active: biz.is_active });
       }
 
-      // ── Business: Onboard (fill details + Claude moderation) ────
+      // ── Business: Onboard (fill details + Claude moderation on first call only) ──
       case 'business.onboard': {
         if (req.method !== 'POST') return res.status(405).json({ error: 'POST required' });
         const {
@@ -732,8 +732,39 @@ module.exports = async (req, res) => {
         if (String(business_name).length > 100 || String(deal_title).length > 100 || String(deal_description).length > 500) {
           return res.status(400).json({ error: 'Fields too long (business_name/deal_title ≤100, deal_description ≤500)' });
         }
-        const bizMod = await moderateDealWithClaude(sanitize(String(business_name)), sanitize(String(deal_description)), null);
-        const isActive = bizMod.approved && bizMod.confidence >= 70;
+
+        // Fetch current row to check payment and prior moderation status
+        const { data: existing, error: existErr } = await supabase
+          .from('business_members')
+          .select('is_onboarded, is_active, stripe_subscription_id')
+          .eq('email', String(email).toLowerCase().trim())
+          .single();
+        if (existErr) throw existErr;
+
+        // Only call Claude on the first onboard — subsequent calls skip moderation
+        // to avoid burning credits during re-submits or dev testing loops.
+        let moderationPassed = false;
+        let moderationReason = null;
+        if (!existing?.is_onboarded) {
+          const bizMod = await moderateDealWithClaude(
+            sanitize(String(business_name)),
+            sanitize(String(deal_description)),
+            null,
+          );
+          moderationPassed = bizMod.approved && bizMod.confidence >= 70;
+          moderationReason = bizMod.reason;
+          console.log(`Business moderated: ${email}, passed=${moderationPassed}, confidence=${bizMod.confidence}`);
+        } else {
+          // Already moderated — preserve whatever is_active the webhook set
+          moderationPassed = true;
+          moderationReason = 'Previously approved';
+        }
+
+        // is_active requires both: Stripe subscription confirmed (has_paid) AND moderation passed.
+        // The webhook is the canonical activation path; moderation alone is not sufficient.
+        const hasPaid = !!existing?.stripe_subscription_id;
+        const isActive = hasPaid && moderationPassed;
+
         const { error: onboardErr } = await supabase
           .from('business_members')
           .update({
@@ -749,8 +780,13 @@ module.exports = async (req, res) => {
           })
           .eq('email', String(email).toLowerCase().trim());
         if (onboardErr) throw onboardErr;
-        console.log(`Business onboarded: ${email}, is_active=${isActive}, confidence=${bizMod.confidence}`);
-        return res.json({ ok: true, is_active: isActive, moderation_reason: bizMod.reason });
+
+        return res.json({
+          ok: true,
+          is_active: isActive,
+          has_paid: hasPaid,
+          moderation_reason: moderationReason,
+        });
       }
 
       // ── Business: Get active partner deals (radius-filtered) ────
