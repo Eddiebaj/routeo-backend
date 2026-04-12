@@ -1,4 +1,5 @@
 const { checkRateLimit } = require('./_rateLimit');
+const crypto = require('crypto');
 
 /**
  * RouteO — Community & Push Notifications (multi-action endpoint)
@@ -38,7 +39,7 @@ const { checkRateLimit } = require('./_rateLimit');
  *   POST /api/community?action=business.register  — Create/upsert business_member by email
  *   POST /api/community?action=business.onboard   — Update details + Claude moderation (first call only); is_active requires Stripe subscription
  *   GET  /api/community?action=business.deals[&lat=X&lng=Y&radius=N] — Active partner deals
- *   POST /api/community?action=stripe.webhook     — Stripe subscription lifecycle (activate/deactivate)
+ *   POST /api/community?action=stripe.webhook     — Stripe webhook (HMAC-verified); handles checkout.session.completed, subscription.updated/deleted
  *
  * Health:
  *   GET  /api/community?action=health              — Health check (no auth required)
@@ -132,13 +133,64 @@ function checkDeviceCooldown(deviceId, action, cooldownMs = 5000) {
   return false;
 }
 
-module.exports = async (req, res) => {
+// ── Raw body helpers (needed for Stripe signature verification) ──────────────
+async function collectRawBody(req) {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(Buffer.from(chunk));
+  return Buffer.concat(chunks);
+}
+
+/**
+ * Verify a Stripe webhook signature.
+ * Implements the Stripe-Signature HMAC-SHA256 scheme manually so we don't
+ * need the stripe npm package. Fails if timestamp is >5 min old (replay guard).
+ */
+function verifyStripeSignature(rawBody, sigHeader, secret) {
+  if (!sigHeader || !secret) return false;
+  const parts = {};
+  for (const part of sigHeader.split(',')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    const k = part.slice(0, eq);
+    const v = part.slice(eq + 1);
+    if (k === 't') parts.t = v;
+    else if (k === 'v1' && !parts.v1) parts.v1 = v; // use first v1
+  }
+  if (!parts.t || !parts.v1) return false;
+
+  // Replay attack guard: reject events older than 5 minutes
+  const tsSeconds = parseInt(parts.t, 10);
+  if (isNaN(tsSeconds) || Math.abs(Math.floor(Date.now() / 1000) - tsSeconds) > 300) return false;
+
+  const payload = `${parts.t}.${rawBody.toString('utf8')}`;
+  const expected = crypto.createHmac('sha256', secret).update(payload, 'utf8').digest('hex');
+
+  try {
+    // timingSafeEqual requires equal-length buffers
+    const a = Buffer.from(parts.v1, 'hex');
+    const b = Buffer.from(expected, 'hex');
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+  } catch { return false; }
+}
+
+async function handler(req, res) {
   if (await checkRateLimit(req, res)) return;
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
+
+  // Collect raw body for all POST requests.
+  // bodyParser is disabled via handler.config below so we own parsing.
+  // rawBody is kept around for Stripe signature verification.
+  let rawBody = Buffer.alloc(0);
+  if (req.method === 'POST') {
+    rawBody = await collectRawBody(req);
+    try { req.body = rawBody.length ? JSON.parse(rawBody.toString('utf8')) : {}; }
+    catch { req.body = {}; }
+  }
 
   const action = req.query.action || '';
   if (!action) return res.status(400).json({ error: 'Missing action param' });
@@ -741,6 +793,15 @@ module.exports = async (req, res) => {
           .single();
         if (existErr) throw existErr;
 
+        // Require payment before accepting listing content.
+        // The Stripe webhook sets stripe_subscription_id on checkout.session.completed.
+        if (!existing?.stripe_subscription_id) {
+          return res.status(402).json({
+            error: 'Payment required',
+            message: 'Complete your subscription before submitting listing details.',
+          });
+        }
+
         // Only call Claude on the first onboard — subsequent calls skip moderation
         // to avoid burning credits during re-submits or dev testing loops.
         let moderationPassed = false;
@@ -815,55 +876,84 @@ module.exports = async (req, res) => {
         return res.json({ deals: filtered });
       }
 
-      // ── Stripe webhook: activate / deactivate business memberships
-      // Webhook URL: POST /api/community?action=stripe.webhook
-      // Set STRIPE_WEBHOOK_TOKEN in Vercel env and pass it as x-stripe-token header
-      // in Stripe's webhook dashboard for shared-secret verification.
-      // TODO: upgrade to full Stripe-Signature HMAC verification (requires raw body).
+      // ── Stripe webhook: activate / deactivate business memberships ──────
+      // Webhook URL (configure in Stripe dashboard):
+      //   POST https://routeo-backend.vercel.app/api/community?action=stripe.webhook
+      // Required Vercel env var: STRIPE_WEBHOOK_SECRET (from Stripe dashboard → Webhooks → signing secret)
+      // Required events: checkout.session.completed, customer.subscription.updated,
+      //                  customer.subscription.deleted
       case 'stripe.webhook': {
         if (req.method !== 'POST') return res.status(405).json({ error: 'POST required' });
-        const webhookToken = process.env.STRIPE_WEBHOOK_TOKEN;
-        if (webhookToken && req.headers['x-stripe-token'] !== webhookToken) {
-          return res.status(401).json({ error: 'Unauthorized' });
-        }
-        const stripeEvent = req.body;
-        if (!stripeEvent?.type || !stripeEvent?.data?.object) {
-          return res.status(400).json({ error: 'Invalid Stripe event' });
+
+        const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+        if (!webhookSecret) {
+          console.error('STRIPE_WEBHOOK_SECRET not configured — rejecting webhook');
+          return res.status(500).json({ error: 'Webhook secret not configured' });
         }
 
-        const obj = stripeEvent.data.object;
-        const customerId    = obj.customer || null;
-        const subscriptionId = obj.id || null;
-        const customerEmail = obj.customer_email || obj.metadata?.email || null;
+        const sigHeader = req.headers['stripe-signature'];
+        if (!verifyStripeSignature(rawBody, sigHeader, webhookSecret)) {
+          console.warn('Stripe webhook signature verification failed');
+          return res.status(400).json({ error: 'Invalid signature' });
+        }
 
-        if (
-          stripeEvent.type === 'customer.subscription.created' ||
-          stripeEvent.type === 'customer.subscription.updated'
-        ) {
-          const isActive = obj.status === 'active' || obj.status === 'trialing';
-          if (customerId) {
+        // Parse the verified event from the raw body (req.body was already parsed above,
+        // but we re-parse here for clarity and to avoid any whitespace normalization issues)
+        let stripeEvent;
+        try { stripeEvent = JSON.parse(rawBody.toString('utf8')); }
+        catch { return res.status(400).json({ error: 'Invalid JSON body' }); }
+
+        const obj = stripeEvent.data?.object;
+        if (!obj) return res.status(400).json({ error: 'Missing data.object' });
+
+        // ── checkout.session.completed ────────────────────────────────────────
+        // This is the canonical activation event. checkout.session has customer_email
+        // directly on the object — subscription events do not.
+        if (stripeEvent.type === 'checkout.session.completed') {
+          const customerId     = obj.customer || null;
+          const subscriptionId = obj.subscription || null;
+          const customerEmail  = (obj.customer_email || obj.customer_details?.email || '').toLowerCase() || null;
+
+          if (customerId && subscriptionId) {
+            // Link the Stripe IDs and mark as paid (is_active gated on is_onboarded in business.deals)
             await supabase.from('business_members')
-              .update({ is_active: isActive, stripe_subscription_id: subscriptionId })
+              .update({ stripe_customer_id: customerId, stripe_subscription_id: subscriptionId, is_active: true })
+              .eq('stripe_customer_id', customerId);
+
+            // First-time checkout: match by email if stripe_customer_id not yet set
+            if (customerEmail) {
+              await supabase.from('business_members')
+                .update({ stripe_customer_id: customerId, stripe_subscription_id: subscriptionId, is_active: true })
+                .eq('email', customerEmail)
+                .is('stripe_customer_id', null);
+            }
+          }
+          // Trigger onboarding email — wire Resend/SendGrid here
+          if (customerEmail) {
+            console.log(`=== BUSINESS PAID: ${customerEmail} — send onboarding portal link ===`);
+          }
+
+        // ── customer.subscription.updated ────────────────────────────────────
+        // Handles status changes: active → past_due → cancelled
+        } else if (stripeEvent.type === 'customer.subscription.updated') {
+          const customerId = obj.customer || null;
+          if (customerId) {
+            const isActive = obj.status === 'active' || obj.status === 'trialing';
+            await supabase.from('business_members')
+              .update({ is_active: isActive })
               .eq('stripe_customer_id', customerId);
           }
-          // On first subscription, match by email to set stripe_customer_id
-          if (customerEmail && isActive) {
-            await supabase.from('business_members')
-              .update({ is_active: true, stripe_customer_id: customerId, stripe_subscription_id: subscriptionId })
-              .eq('email', customerEmail.toLowerCase())
-              .is('stripe_customer_id', null);
-          }
-          // Log for onboarding email trigger — integrate Resend/SendGrid here
-          if (isActive && customerEmail) {
-            console.log(`=== BUSINESS ACTIVATED: ${customerEmail} — send onboarding link ===`);
-          }
+
+        // ── customer.subscription.deleted ────────────────────────────────────
         } else if (stripeEvent.type === 'customer.subscription.deleted') {
+          const customerId = obj.customer || null;
           if (customerId) {
             await supabase.from('business_members')
               .update({ is_active: false })
               .eq('stripe_customer_id', customerId);
           }
         }
+        // All other event types: acknowledge and ignore
         return res.status(200).json({ received: true });
       }
 
@@ -896,4 +986,10 @@ module.exports = async (req, res) => {
     console.error(`Community ${action} error:`, err);
     return res.status(500).json({ error: 'Internal server error' });
   }
-};
+}
+
+// Disable Vercel's automatic body parsing so collectRawBody() can read the
+// raw stream — required for Stripe webhook HMAC signature verification.
+handler.config = { api: { bodyParser: false } };
+
+module.exports = handler;
