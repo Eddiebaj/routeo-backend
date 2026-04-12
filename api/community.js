@@ -762,9 +762,26 @@ async function handler(req, res) {
         if (!email || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
           return res.status(400).json({ error: 'Valid email required' });
         }
+        const cleanEmail = sanitize(email.toLowerCase().trim());
+
+        // Check if already registered — don't overwrite an existing token
+        const { data: existing } = await supabase
+          .from('business_members')
+          .select('id, is_onboarded, is_active')
+          .eq('email', cleanEmail)
+          .maybeSingle();
+
+        if (existing) {
+          return res.json({ ok: true, id: existing.id, is_onboarded: existing.is_onboarded, is_active: existing.is_active });
+        }
+
+        // New registration — generate one-time onboarding token.
+        // Token is NOT returned here; it reaches the business via onboarding email
+        // logged in the stripe.webhook checkout.session.completed handler.
+        const onboardingToken = crypto.randomBytes(24).toString('hex');
         const { data: biz, error: bizErr } = await supabase
           .from('business_members')
-          .upsert({ email: sanitize(email.toLowerCase().trim()) }, { onConflict: 'email' })
+          .insert({ email: cleanEmail, onboarding_token: onboardingToken })
           .select('id, is_onboarded, is_active')
           .single();
         if (bizErr) throw bizErr;
@@ -775,23 +792,40 @@ async function handler(req, res) {
       case 'business.onboard': {
         if (req.method !== 'POST') return res.status(405).json({ error: 'POST required' });
         const {
-          email, business_name, deal_title, deal_description,
+          email, token,
+          business_name, deal_title, deal_description,
           lat, lng, address, category,
         } = req.body || {};
-        if (!email || !business_name || !deal_title || !deal_description) {
-          return res.status(400).json({ error: 'email, business_name, deal_title, and deal_description are required' });
+        if (!email || !token || !business_name || !deal_title || !deal_description) {
+          return res.status(400).json({ error: 'email, token, business_name, deal_title, and deal_description are required' });
         }
         if (String(business_name).length > 100 || String(deal_title).length > 100 || String(deal_description).length > 500) {
           return res.status(400).json({ error: 'Fields too long (business_name/deal_title ≤100, deal_description ≤500)' });
         }
 
-        // Fetch current row to check payment and prior moderation status
+        // Fetch current row — includes token for identity verification
         const { data: existing, error: existErr } = await supabase
           .from('business_members')
-          .select('is_onboarded, is_active, stripe_subscription_id')
+          .select('is_onboarded, is_active, stripe_subscription_id, onboarding_token')
           .eq('email', String(email).toLowerCase().trim())
           .single();
         if (existErr) throw existErr;
+
+        // Verify onboarding token — timing-safe comparison to prevent enumeration attacks.
+        // The token was generated on business.register and sent via onboarding email.
+        // It is cleared after the first successful onboard (one-time use).
+        if (!existing?.onboarding_token) {
+          return res.status(401).json({ error: 'No active onboarding session for this email' });
+        }
+        try {
+          const supplied = Buffer.from(String(token), 'hex');
+          const stored   = Buffer.from(existing.onboarding_token, 'hex');
+          if (supplied.length !== stored.length || !crypto.timingSafeEqual(supplied, stored)) {
+            return res.status(401).json({ error: 'Invalid onboarding token' });
+          }
+        } catch {
+          return res.status(401).json({ error: 'Invalid onboarding token' });
+        }
 
         // Require payment before accepting listing content.
         // The Stripe webhook sets stripe_subscription_id on checkout.session.completed.
@@ -841,6 +875,13 @@ async function handler(req, res) {
           })
           .eq('email', String(email).toLowerCase().trim());
         if (onboardErr) throw onboardErr;
+
+        // Clear the token — it's one-time use. Future listing updates will require
+        // a new token (implement business.refresh-token in the portal when needed).
+        await supabase
+          .from('business_members')
+          .update({ onboarding_token: null })
+          .eq('email', String(email).toLowerCase().trim());
 
         return res.json({
           ok: true,
@@ -928,9 +969,18 @@ async function handler(req, res) {
                 .is('stripe_customer_id', null);
             }
           }
-          // Trigger onboarding email — wire Resend/SendGrid here
+          // Log onboarding token for manual email (wire Resend/SendGrid here to automate).
+          // The token authenticates business.onboard — never expose it in HTTP responses.
           if (customerEmail) {
-            console.log(`=== BUSINESS PAID: ${customerEmail} — send onboarding portal link ===`);
+            const { data: tokenRow } = await supabase
+              .from('business_members')
+              .select('onboarding_token')
+              .eq('email', customerEmail)
+              .maybeSingle();
+            const tok = tokenRow?.onboarding_token || 'TOKEN_NOT_FOUND';
+            console.log(`=== BUSINESS PAID: ${customerEmail} ===`);
+            console.log(`=== ONBOARDING TOKEN: ${tok} ===`);
+            console.log(`=== Portal link: https://your-portal.com/onboard?email=${encodeURIComponent(customerEmail)}&token=${tok} ===`);
           }
 
         // ── customer.subscription.updated ────────────────────────────────────
