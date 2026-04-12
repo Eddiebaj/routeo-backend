@@ -624,7 +624,7 @@ async function fetchStatic(stopId) {
 }
 
 // ── Core per-stop logic (returns response object) ─────────
-async function fetchArrivalsForStop(stopId) {
+async function fetchArrivalsForStop(stopId, arrivalLimit = 8) {
   const isSTO = isSTOStop(stopId);
 
   // Check GTFS data freshness (non-blocking)
@@ -741,6 +741,10 @@ async function fetchArrivalsForStop(stopId) {
     if (dataWarning) base.dataWarning = dataWarning;
     if (Object.keys(reliability).length > 0) base.reliability = reliability;
     assignConfidence(base.arrivals || []);
+    // Apply per-user departure cap (free: 2, premium: 20)
+    if (Array.isArray(base.arrivals) && base.arrivals.length > arrivalLimit) {
+      base.arrivals = base.arrivals.slice(0, arrivalLimit);
+    }
 
     // Ghost bus auto-detection: compare current arrivals to previous snapshot
     const prev = prevArrivalsCache[stopId];
@@ -838,13 +842,17 @@ module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cache-Control', 'public, s-maxage=30, stale-while-revalidate=60');
 
+  // Premium departure cap: free=2, premium=20
+  const isPremium = req.query.premium === 'true';
+  const arrivalLimit = isPremium ? 20 : 2;
+
   // ── Batch mode: ?stops=3017,3000,9942 ───────────────────
   const stopsParam = req.query.stops;
   if (stopsParam) {
     const ids = stopsParam.split(',').map(s => (s.trim().replace(/^0+/, '') || s.trim())).filter(Boolean);
     if (ids.length === 0) return res.status(400).json({ error: 'stops param empty' });
     if (ids.length > 10) return res.status(400).json({ error: 'Too many stops', max: 10, received: ids.length });
-    const results = await Promise.all(ids.map(id => fetchArrivalsForStop(id)));
+    const results = await Promise.all(ids.map(id => fetchArrivalsForStop(id, arrivalLimit)));
     res.json({ results });
     logRequest(ids.join(','), 'batch', Date.now() - startTime);
     return;
@@ -855,7 +863,7 @@ module.exports = async (req, res) => {
   if (!rawStopId) return res.status(400).json({ error: 'stop param required' });
   const stopId = rawStopId.replace(/^0+/, '') || rawStopId;
 
-  const result = await fetchArrivalsForStop(stopId);
+  const result = await fetchArrivalsForStop(stopId, arrivalLimit);
   if (result.error) return res.status(500).json(result);
   res.json(result);
   logRequest(stopId, result.source || 'unknown', Date.now() - startTime);
