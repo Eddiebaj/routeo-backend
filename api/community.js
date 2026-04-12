@@ -34,6 +34,12 @@ const { checkRateLimit } = require('./_rateLimit');
  *   GET  /api/community?action=ghost.stats&stop_id=X — Aggregated ghost reports (last 60min)
  *   GET  /api/community?action=ghost.device_stats&device_id=X — Weekly stats for device
  *
+ * Business membership (B2B partner deals):
+ *   POST /api/community?action=business.register  — Create/upsert business_member by email
+ *   POST /api/community?action=business.onboard   — Update details + Claude moderation → is_active
+ *   GET  /api/community?action=business.deals[&lat=X&lng=Y&radius=N] — Active partner deals
+ *   POST /api/community?action=stripe.webhook     — Stripe subscription lifecycle (activate/deactivate)
+ *
  * Health:
  *   GET  /api/community?action=health              — Health check (no auth required)
  */
@@ -695,6 +701,134 @@ module.exports = async (req, res) => {
           mostAffectedRoute: mostAffected,
           mostAffectedCount: maxCount,
         });
+      }
+
+      // ── Business: Register email ────────────────────────────────
+      case 'business.register': {
+        if (req.method !== 'POST') return res.status(405).json({ error: 'POST required' });
+        const { email } = req.body || {};
+        if (!email || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+          return res.status(400).json({ error: 'Valid email required' });
+        }
+        const { data: biz, error: bizErr } = await supabase
+          .from('business_members')
+          .upsert({ email: sanitize(email.toLowerCase().trim()) }, { onConflict: 'email' })
+          .select('id, is_onboarded, is_active')
+          .single();
+        if (bizErr) throw bizErr;
+        return res.json({ ok: true, id: biz.id, is_onboarded: biz.is_onboarded, is_active: biz.is_active });
+      }
+
+      // ── Business: Onboard (fill details + Claude moderation) ────
+      case 'business.onboard': {
+        if (req.method !== 'POST') return res.status(405).json({ error: 'POST required' });
+        const {
+          email, business_name, deal_title, deal_description,
+          lat, lng, address, category,
+        } = req.body || {};
+        if (!email || !business_name || !deal_title || !deal_description) {
+          return res.status(400).json({ error: 'email, business_name, deal_title, and deal_description are required' });
+        }
+        if (String(business_name).length > 100 || String(deal_title).length > 100 || String(deal_description).length > 500) {
+          return res.status(400).json({ error: 'Fields too long (business_name/deal_title ≤100, deal_description ≤500)' });
+        }
+        const bizMod = await moderateDealWithClaude(sanitize(String(business_name)), sanitize(String(deal_description)), null);
+        const isActive = bizMod.approved && bizMod.confidence >= 70;
+        const { error: onboardErr } = await supabase
+          .from('business_members')
+          .update({
+            business_name:    sanitize(String(business_name)),
+            deal_title:       sanitize(String(deal_title)),
+            deal_description: sanitize(String(deal_description)),
+            lat:    typeof lat === 'number' ? lat : null,
+            lng:    typeof lng === 'number' ? lng : null,
+            address:  sanitize(String(address || '')),
+            category: sanitize(String(category || 'other')),
+            is_onboarded: true,
+            is_active: isActive,
+          })
+          .eq('email', String(email).toLowerCase().trim());
+        if (onboardErr) throw onboardErr;
+        console.log(`Business onboarded: ${email}, is_active=${isActive}, confidence=${bizMod.confidence}`);
+        return res.json({ ok: true, is_active: isActive, moderation_reason: bizMod.reason });
+      }
+
+      // ── Business: Get active partner deals (radius-filtered) ────
+      case 'business.deals': {
+        const userLat = parseFloat(req.query.lat) || 45.4215;
+        const userLng = parseFloat(req.query.lng) || -75.6972;
+        const radiusM = Math.min(parseInt(req.query.radius) || 10000, 50000);
+
+        const { data: bizDeals, error: bizDealsErr } = await supabase
+          .from('business_members')
+          .select('id, business_name, deal_title, deal_description, photo_url, lat, lng, address, category')
+          .eq('is_active', true)
+          .eq('is_onboarded', true);
+        if (bizDealsErr) throw bizDealsErr;
+
+        const R = 6371000;
+        const latRad = userLat * Math.PI / 180;
+        const filtered = (bizDeals || []).filter(d => {
+          if (!d.lat || !d.lng) return true; // no location = show city-wide
+          const dLat = (d.lat - userLat) * Math.PI / 180;
+          const dLng = (d.lng - userLng) * Math.PI / 180;
+          const a = Math.sin(dLat / 2) ** 2
+            + Math.cos(latRad) * Math.cos(d.lat * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+          return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) <= radiusM;
+        });
+        return res.json({ deals: filtered });
+      }
+
+      // ── Stripe webhook: activate / deactivate business memberships
+      // Webhook URL: POST /api/community?action=stripe.webhook
+      // Set STRIPE_WEBHOOK_TOKEN in Vercel env and pass it as x-stripe-token header
+      // in Stripe's webhook dashboard for shared-secret verification.
+      // TODO: upgrade to full Stripe-Signature HMAC verification (requires raw body).
+      case 'stripe.webhook': {
+        if (req.method !== 'POST') return res.status(405).json({ error: 'POST required' });
+        const webhookToken = process.env.STRIPE_WEBHOOK_TOKEN;
+        if (webhookToken && req.headers['x-stripe-token'] !== webhookToken) {
+          return res.status(401).json({ error: 'Unauthorized' });
+        }
+        const stripeEvent = req.body;
+        if (!stripeEvent?.type || !stripeEvent?.data?.object) {
+          return res.status(400).json({ error: 'Invalid Stripe event' });
+        }
+
+        const obj = stripeEvent.data.object;
+        const customerId    = obj.customer || null;
+        const subscriptionId = obj.id || null;
+        const customerEmail = obj.customer_email || obj.metadata?.email || null;
+
+        if (
+          stripeEvent.type === 'customer.subscription.created' ||
+          stripeEvent.type === 'customer.subscription.updated'
+        ) {
+          const isActive = obj.status === 'active' || obj.status === 'trialing';
+          if (customerId) {
+            await supabase.from('business_members')
+              .update({ is_active: isActive, stripe_subscription_id: subscriptionId })
+              .eq('stripe_customer_id', customerId);
+          }
+          // On first subscription, match by email to set stripe_customer_id
+          if (customerEmail && isActive) {
+            await supabase.from('business_members')
+              .update({ is_active: true, stripe_customer_id: customerId, stripe_subscription_id: subscriptionId })
+              .eq('email', customerEmail.toLowerCase())
+              .is('stripe_customer_id', null);
+          }
+          // Log for onboarding email trigger — integrate Resend/SendGrid here
+          if (isActive && customerEmail) {
+            console.log(`=== BUSINESS ACTIVATED: ${customerEmail} — send onboarding link ===`);
+          }
+        } else if (stripeEvent.type === 'customer.subscription.deleted') {
+          if (customerId) {
+            await supabase.from('business_members')
+              .update({ is_active: false })
+              .eq('stripe_customer_id', customerId);
+          }
+        }
+        return res.status(200).json({ received: true });
       }
 
       // ── Health check ─────────────────────────────────────────────
