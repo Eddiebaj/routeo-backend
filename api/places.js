@@ -1,9 +1,11 @@
 // api/places.js — Combined Google API proxy
-// Actions: autocomplete, details, photo, nearby, geocode, autocomplete-geocode
+// Actions (GET): autocomplete, details, photo, nearby, geocode, autocomplete-geocode
+// Actions (POST): parse-transit
 const { checkRateLimit } = require('./_rateLimit');
 const { createClient } = require('@supabase/supabase-js');
 
 const GOOGLE_KEY = process.env.GOOGLE_API_KEY;
+const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 const ALLOWED_HOSTS = ['maps.googleapis.com', 'lh3.googleusercontent.com'];
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -17,13 +19,70 @@ function sanitizeRadius(raw) {
   return Math.max(100, Math.min(50000, n));
 }
 
+const SYSTEM_PROMPT_EN = `You are a transit planning assistant for Ottawa, Canada.
+The user will give you a natural-language trip request (e.g. "get me from Carleton to ByWard Market").
+Extract the origin and destination. Well-known Ottawa landmarks include:
+  Parliament Hill, ByWard Market, Rideau Centre, Rideau Canal, Ottawa Airport,
+  Carleton University, University of Ottawa (uOttawa), Algonquin College, Saint Paul University,
+  Kanata, Barrhaven, Orleans, Nepean, Westboro, Hintonburg, Little Italy, Sandy Hill,
+  Glebe, Old Ottawa South, Centretown, Vanier.
+Respond ONLY with valid JSON in the form: {"from":"<origin or null>","to":"<destination or null>"}
+If a field cannot be determined, use null.`;
+
+const SYSTEM_PROMPT_FR = `Tu es un assistant de planification de trajet pour Ottawa, Canada.
+L'utilisateur te donnera une demande de trajet en langage naturel.
+Extrais l'origine et la destination.
+Reponds UNIQUEMENT avec du JSON valide : {"from":"<origine ou null>","to":"<destination ou null>"}
+Si un champ ne peut pas etre determine, utilise null.`;
+
 module.exports = async function handler(req, res) {
   if (await checkRateLimit(req, res)) return;
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.status(204).end();
 
   const { action } = req.query;
-  if (!action) return res.status(400).json({ error: 'Missing action param (autocomplete|details|photo|nearby|geocode|autocomplete-geocode)' });
+  if (!action) return res.status(400).json({ error: 'Missing action param (autocomplete|details|photo|nearby|geocode|autocomplete-geocode|parse-transit)' });
+
+  // parse-transit: POST, calls Anthropic Claude to extract {from, to} from transcript
+  if (action === 'parse-transit') {
+    if (req.method !== 'POST') return res.status(405).json({ error: 'POST required' });
+    if (!ANTHROPIC_KEY) return res.status(500).json({ error: 'No ANTHROPIC_API_KEY env var' });
+    const { transcript, language } = req.body || {};
+    if (!transcript || typeof transcript !== 'string') return res.status(400).json({ error: 'Missing transcript' });
+    try {
+      const claudeResp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': ANTHROPIC_KEY,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 128,
+          system: language === 'fr' ? SYSTEM_PROMPT_FR : SYSTEM_PROMPT_EN,
+          messages: [{ role: 'user', content: transcript }],
+        }),
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!claudeResp.ok) return res.status(502).json({ error: `Claude HTTP ${claudeResp.status}` });
+      const data = await claudeResp.json();
+      const text = data.content?.[0]?.text ?? '';
+      const match = text.match(/\{[\s\S]*?\}/);
+      if (!match) return res.status(200).json({ from: null, to: null });
+      const parsed = JSON.parse(match[0]);
+      return res.status(200).json({
+        from: typeof parsed.from === 'string' ? parsed.from : null,
+        to:   typeof parsed.to   === 'string' ? parsed.to   : null,
+      });
+    } catch (err) {
+      console.error('parse-transit error:', err);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+
   if (!GOOGLE_KEY) return res.status(500).json({ error: 'No GOOGLE_API_KEY env var' });
 
   try {
