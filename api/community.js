@@ -794,13 +794,16 @@ async function handler(req, res) {
         const {
           email, token,
           business_name, deal_title, deal_description,
-          lat, lng, address, category,
+          lat, lng, address, category, photo_base64,
         } = req.body || {};
         if (!email || !token || !business_name || !deal_title || !deal_description) {
           return res.status(400).json({ error: 'email, token, business_name, deal_title, and deal_description are required' });
         }
         if (String(business_name).length > 100 || String(deal_title).length > 100 || String(deal_description).length > 500) {
           return res.status(400).json({ error: 'Fields too long (business_name/deal_title ≤100, deal_description ≤500)' });
+        }
+        if (photo_base64 && photo_base64.length > 680000) {
+          return res.status(400).json({ error: 'Photo too large (max 500KB)' });
         }
 
         // Fetch current row — includes token for identity verification
@@ -860,16 +863,57 @@ async function handler(req, res) {
         const hasPaid = !!existing?.stripe_subscription_id;
         const isActive = hasPaid && moderationPassed;
 
+        // Upload photo to Supabase Storage if provided
+        let photoUrl = null;
+        if (photo_base64) {
+          try {
+            const buf = Buffer.from(photo_base64, 'base64');
+            const safeEmail = String(email).replace(/[^a-z0-9]/gi, '_').slice(0, 20);
+            const filename = `business/${Date.now()}_${safeEmail}.jpg`;
+            const { error: uploadErr } = await supabase.storage
+              .from('deal-photos')
+              .upload(filename, buf, { contentType: 'image/jpeg', upsert: false });
+            if (!uploadErr) {
+              const { data: urlData } = supabase.storage.from('deal-photos').getPublicUrl(filename);
+              photoUrl = urlData?.publicUrl || null;
+            }
+          } catch (e) {
+            console.error('Business photo upload error:', e);
+          }
+        }
+
+        // Geocode address to lat/lng if not provided by client
+        let resolvedLat = typeof lat === 'number' ? lat : null;
+        let resolvedLng = typeof lng === 'number' ? lng : null;
+        if ((!resolvedLat || !resolvedLng) && address) {
+          try {
+            const geoResp = await fetch(
+              `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(String(address) + ' Ottawa Canada')}&format=json&limit=1`,
+              { headers: { 'User-Agent': 'RouteO/1.0' }, signal: AbortSignal.timeout(5000) }
+            );
+            if (geoResp.ok) {
+              const geoData = await geoResp.json();
+              if (geoData[0]) {
+                resolvedLat = parseFloat(geoData[0].lat);
+                resolvedLng = parseFloat(geoData[0].lon);
+              }
+            }
+          } catch (e) {
+            console.error('Business geocode error:', e);
+          }
+        }
+
         const { error: onboardErr } = await supabase
           .from('business_members')
           .update({
             business_name:    sanitize(String(business_name)),
             deal_title:       sanitize(String(deal_title)),
             deal_description: sanitize(String(deal_description)),
-            lat:    typeof lat === 'number' ? lat : null,
-            lng:    typeof lng === 'number' ? lng : null,
+            lat:    resolvedLat,
+            lng:    resolvedLng,
             address:  sanitize(String(address || '')),
             category: sanitize(String(category || 'other')),
+            photo_url: photoUrl,
             is_onboarded: true,
             is_active: isActive,
           })

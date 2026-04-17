@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RouteO Business Portal</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0d1117;
+      color: #eef2f7;
+      min-height: 100vh;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 32px 16px 64px;
+    }
+
+    .card {
+      background: #131a24;
+      border: 1px solid #1e2d42;
+      border-radius: 20px;
+      padding: 40px 36px;
+      width: 100%;
+      max-width: 540px;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 28px;
+    }
+    .logo-dot {
+      width: 28px; height: 28px; border-radius: 8px;
+      background: #00A78D;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .logo-dot svg { width: 16px; height: 16px; fill: #fff; }
+    .logo-name { font-size: 18px; font-weight: 800; color: #eef2f7; letter-spacing: -0.3px; }
+    .logo-sub  { font-size: 12px; color: #6b7f99; margin-left: 2px; }
+
+    h1 { font-size: 22px; font-weight: 800; color: #eef2f7; letter-spacing: -0.4px; margin-bottom: 6px; }
+    .subtitle { font-size: 14px; color: #6b7f99; margin-bottom: 32px; line-height: 1.5; }
+
+    .field { margin-bottom: 20px; }
+    label { display: block; font-size: 12px; font-weight: 700; color: #6b7f99;
+            text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 8px; }
+    input, textarea, select {
+      width: 100%;
+      background: #0d1117;
+      border: 1px solid #1e2d42;
+      border-radius: 12px;
+      color: #eef2f7;
+      font-size: 14px;
+      font-family: inherit;
+      padding: 12px 14px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input:focus, textarea:focus, select:focus { border-color: #00A78D; }
+    input:disabled { color: #6b7f99; cursor: not-allowed; }
+    textarea { resize: vertical; min-height: 90px; line-height: 1.5; }
+    select option { background: #131a24; }
+
+    .char-count {
+      text-align: right;
+      font-size: 11px;
+      color: #6b7f99;
+      margin-top: 5px;
+    }
+    .char-count.warn { color: #e8a020; }
+    .char-count.over { color: #cc3b2a; }
+
+    .photo-label {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: #0d1117;
+      border: 1px dashed #1e2d42;
+      border-radius: 12px;
+      padding: 16px 14px;
+      cursor: pointer;
+      transition: border-color 0.15s;
+    }
+    .photo-label:hover { border-color: #00A78D; }
+    .photo-label span { font-size: 13px; color: #6b7f99; }
+    .photo-label strong { font-size: 13px; color: #00A78D; }
+    #photo-input { display: none; }
+    #photo-preview {
+      margin-top: 10px;
+      border-radius: 10px;
+      overflow: hidden;
+      display: none;
+    }
+    #photo-preview img { width: 100%; max-height: 180px; object-fit: cover; display: block; }
+    #photo-remove {
+      display: none;
+      font-size: 11px;
+      color: #cc3b2a;
+      cursor: pointer;
+      margin-top: 6px;
+      background: none;
+      border: none;
+      padding: 0;
+      font-family: inherit;
+    }
+
+    .btn {
+      width: 100%;
+      background: #00A78D;
+      color: #fff;
+      border: none;
+      border-radius: 14px;
+      padding: 15px;
+      font-size: 15px;
+      font-weight: 700;
+      font-family: inherit;
+      cursor: pointer;
+      margin-top: 8px;
+      transition: opacity 0.15s;
+    }
+    .btn:hover { opacity: 0.9; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn.loading { position: relative; color: transparent; }
+    .btn.loading::after {
+      content: '';
+      position: absolute;
+      top: 50%; left: 50%;
+      width: 18px; height: 18px;
+      margin: -9px 0 0 -9px;
+      border: 2px solid rgba(255,255,255,0.4);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .banner {
+      border-radius: 12px;
+      padding: 14px 16px;
+      font-size: 13px;
+      line-height: 1.5;
+      margin-bottom: 20px;
+    }
+    .banner.error   { background: #1f100e; border: 1px solid #cc3b2a60; color: #e07060; }
+    .banner.warn    { background: #1f1a0d; border: 1px solid #e8a02060; color: #e8a020; }
+    .banner.success { background: #0f2420; border: 1px solid #00A78D60; color: #00A78D; }
+
+    .success-screen { text-align: center; padding: 16px 0 8px; display: none; }
+    .success-screen .icon {
+      width: 64px; height: 64px; border-radius: 50%;
+      background: #00A78D20;
+      display: flex; align-items: center; justify-content: center;
+      margin: 0 auto 20px;
+    }
+    .success-screen h2 { font-size: 20px; font-weight: 800; margin-bottom: 8px; }
+    .success-screen p  { font-size: 14px; color: #6b7f99; line-height: 1.6; }
+    .success-screen .review-note {
+      margin-top: 16px;
+      background: #1f1a0d;
+      border: 1px solid #e8a02040;
+      border-radius: 10px;
+      padding: 12px 14px;
+      font-size: 12px;
+      color: #e8a020;
+      text-align: left;
+    }
+
+    .divider { height: 1px; background: #1e2d42; margin: 28px 0; }
+
+    .step-row {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 28px;
+    }
+    .step {
+      flex: 1;
+      height: 4px;
+      border-radius: 2px;
+      background: #1e2d42;
+    }
+    .step.done { background: #00A78D; }
+    .step.active { background: #00A78D80; }
+  </style>
+</head>
+<body>
+<div class="card">
+
+  <!-- Logo -->
+  <div class="logo">
+    <div class="logo-dot">
+      <svg viewBox="0 0 16 16"><path d="M8 1C4.13 1 1 4.13 1 8s3.13 7 7 7 7-3.13 7-7S11.87 1 8 1zm0 2.5a2 2 0 110 4 2 2 0 010-4zM8 13.5a5.5 5.5 0 01-4.4-2.2C3.63 10.1 6 9.25 8 9.25s4.37.85 4.4 2.05A5.5 5.5 0 018 13.5z"/></svg>
+    </div>
+    <div>
+      <span class="logo-name">RouteO</span>
+      <span class="logo-sub">Business Portal</span>
+    </div>
+  </div>
+
+  <!-- Progress steps -->
+  <div class="step-row" id="step-row">
+    <div class="step done" title="Payment"></div>
+    <div class="step active" title="Listing details"></div>
+    <div class="step" title="Live"></div>
+  </div>
+
+  <!-- Fatal error (bad link) -->
+  <div class="banner error" id="fatal-banner" style="display:none"></div>
+
+  <!-- Form screen -->
+  <div id="form-screen">
+    <h1>Set up your listing</h1>
+    <p class="subtitle">Your deal will be shown to Ottawa transit riders near your location. Takes about 2 minutes.</p>
+
+    <!-- Payment required banner -->
+    <div class="banner warn" id="payment-banner" style="display:none">
+      <strong>Payment not yet confirmed.</strong><br>
+      Complete checkout first, then return to this page. It can take up to a minute for your payment to register.
+      <br><br>
+      <a id="pay-link" href="#" style="color:#e8a020;font-weight:700;">Return to payment &rarr;</a>
+    </div>
+
+    <form id="onboard-form" autocomplete="off">
+      <div class="field">
+        <label>Email</label>
+        <input type="email" id="field-email" disabled placeholder="your@business.com" />
+      </div>
+
+      <div class="field">
+        <label>Business name <span style="color:#cc3b2a">*</span></label>
+        <input type="text" id="field-business-name" maxlength="100" placeholder="e.g. The Elgin Street Diner" required />
+      </div>
+
+      <div class="field">
+        <label>Deal title <span style="color:#cc3b2a">*</span></label>
+        <input type="text" id="field-deal-title" maxlength="100" placeholder="e.g. 10% off for transit riders" required />
+      </div>
+
+      <div class="field">
+        <label>Deal description <span style="color:#cc3b2a">*</span></label>
+        <textarea id="field-deal-description" maxlength="500" placeholder="Describe your offer in a sentence or two — what riders get and how to claim it." required></textarea>
+        <div class="char-count" id="desc-count">0 / 500</div>
+      </div>
+
+      <div class="field">
+        <label>Category</label>
+        <select id="field-category">
+          <option value="food_drink">Food &amp; Drink</option>
+          <option value="retail">Retail</option>
+          <option value="services">Services</option>
+          <option value="entertainment">Entertainment</option>
+          <option value="fitness">Fitness</option>
+          <option value="health">Health &amp; Wellness</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>Address</label>
+        <input type="text" id="field-address" placeholder="123 Elgin St, Ottawa, ON" />
+        <div style="font-size:11px;color:#6b7f99;margin-top:5px;">Used to show your deal to nearby riders. Leave blank for city-wide.</div>
+      </div>
+
+      <div class="field">
+        <label>Deal photo <span style="color:#6b7f99;font-weight:400;text-transform:none;letter-spacing:0">(optional, max 500 KB)</span></label>
+        <label class="photo-label" for="photo-input">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#6b7f99" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+          <span>Tap to choose image &nbsp;·&nbsp; <strong>JPEG or PNG</strong></span>
+        </label>
+        <input type="file" id="photo-input" accept="image/jpeg,image/png,image/webp" />
+        <div id="photo-preview"><img id="photo-img" src="" alt="Preview" /></div>
+        <button type="button" id="photo-remove">Remove photo</button>
+        <div class="banner error" id="photo-error" style="display:none;margin-top:8px;margin-bottom:0;"></div>
+      </div>
+
+      <div class="banner error" id="submit-error" style="display:none"></div>
+
+      <button type="submit" class="btn" id="submit-btn">Submit listing</button>
+    </form>
+  </div>
+
+  <!-- Success screen -->
+  <div class="success-screen" id="success-screen">
+    <div class="icon">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#00A78D" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+    </div>
+    <h2 id="success-title">Listing submitted!</h2>
+    <p id="success-body">Your deal is being reviewed and will go live shortly.</p>
+    <div class="review-note" id="review-note" style="display:none">
+      <strong>Under review:</strong> Our team will check your listing within 24 hours. You'll be notified by email once it's approved.
+    </div>
+  </div>
+
+</div>
+
+<script>
+  const API_BASE = 'https://routeo-backend.vercel.app/api/community';
+  const params  = new URLSearchParams(window.location.search);
+  const email   = params.get('email') || '';
+  const token   = params.get('token') || '';
+
+  const fatalBanner   = document.getElementById('fatal-banner');
+  const formScreen    = document.getElementById('form-screen');
+  const successScreen = document.getElementById('success-screen');
+  const paymentBanner = document.getElementById('payment-banner');
+  const payLink       = document.getElementById('pay-link');
+  const submitBtn     = document.getElementById('submit-btn');
+  const submitError   = document.getElementById('submit-error');
+  const descTA        = document.getElementById('field-deal-description');
+  const descCount     = document.getElementById('desc-count');
+  const photoInput    = document.getElementById('photo-input');
+  const photoPreview  = document.getElementById('photo-preview');
+  const photoImg      = document.getElementById('photo-img');
+  const photoRemove   = document.getElementById('photo-remove');
+  const photoError    = document.getElementById('photo-error');
+  const stepRow       = document.getElementById('step-row');
+
+  let photoBase64 = null;
+
+  // ── Validate link ────────────────────────────────────────────────────
+  if (!email || !token) {
+    fatalBanner.textContent = 'Invalid onboarding link. Please use the link sent to your email.';
+    fatalBanner.style.display = 'block';
+    formScreen.style.display = 'none';
+    stepRow.style.display = 'none';
+  } else {
+    document.getElementById('field-email').value = email;
+  }
+
+  // ── Character counter ────────────────────────────────────────────────
+  descTA.addEventListener('input', () => {
+    const n = descTA.value.length;
+    descCount.textContent = n + ' / 500';
+    descCount.className = 'char-count' + (n > 480 ? ' warn' : '') + (n >= 500 ? ' over' : '');
+  });
+
+  // ── Photo upload ─────────────────────────────────────────────────────
+  photoInput.addEventListener('change', () => {
+    const file = photoInput.files[0];
+    if (!file) return;
+    photoError.style.display = 'none';
+    if (file.size > 500 * 1024) {
+      photoError.textContent = 'Photo is too large (max 500 KB). Please choose a smaller image.';
+      photoError.style.display = 'block';
+      photoInput.value = '';
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const dataUrl = e.target.result;
+      // Strip data URL prefix to get raw base64
+      photoBase64 = dataUrl.split(',')[1];
+      photoImg.src = dataUrl;
+      photoPreview.style.display = 'block';
+      photoRemove.style.display = 'inline';
+    };
+    reader.readAsDataURL(file);
+  });
+
+  photoRemove.addEventListener('click', () => {
+    photoBase64 = null;
+    photoInput.value = '';
+    photoPreview.style.display = 'none';
+    photoRemove.style.display = 'none';
+    photoImg.src = '';
+  });
+
+  // ── Form submit ──────────────────────────────────────────────────────
+  document.getElementById('onboard-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    submitError.style.display = 'none';
+    submitBtn.disabled = true;
+    submitBtn.classList.add('loading');
+
+    const body = {
+      email,
+      token,
+      business_name:    document.getElementById('field-business-name').value.trim(),
+      deal_title:       document.getElementById('field-deal-title').value.trim(),
+      deal_description: descTA.value.trim(),
+      category:         document.getElementById('field-category').value,
+      address:          document.getElementById('field-address').value.trim() || null,
+    };
+    if (photoBase64) body.photo_base64 = photoBase64;
+
+    try {
+      const resp = await fetch(API_BASE + '?action=business.onboard', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await resp.json();
+
+      if (resp.status === 402) {
+        // Payment not yet confirmed
+        paymentBanner.style.display = 'block';
+        submitBtn.disabled = false;
+        submitBtn.classList.remove('loading');
+        return;
+      }
+
+      if (!resp.ok) {
+        const msg = data?.error || data?.message || 'Something went wrong. Please try again.';
+        submitError.textContent = msg;
+        submitError.style.display = 'block';
+        submitBtn.disabled = false;
+        submitBtn.classList.remove('loading');
+        return;
+      }
+
+      // Success
+      formScreen.style.display = 'none';
+      successScreen.style.display = 'block';
+      // Update progress bar
+      stepRow.querySelectorAll('.step').forEach((s, i) => {
+        s.className = 'step ' + (i < 2 ? 'done' : (i === 2 ? 'active' : ''));
+      });
+
+      if (data.is_active) {
+        document.getElementById('success-title').textContent = 'Your listing is live!';
+        document.getElementById('success-body').textContent =
+          'Ottawa transit riders near ' + (body.address || 'Ottawa') + ' can now see your deal in the RouteO app.';
+        stepRow.querySelectorAll('.step').forEach(s => s.className = 'step done');
+      } else {
+        document.getElementById('success-title').textContent = 'Listing submitted!';
+        document.getElementById('success-body').textContent =
+          'Your deal has been submitted for review. It will appear in the app once approved.';
+        document.getElementById('review-note').style.display = 'block';
+      }
+
+    } catch (err) {
+      submitError.textContent = 'Network error — check your connection and try again.';
+      submitError.style.display = 'block';
+      submitBtn.disabled = false;
+      submitBtn.classList.remove('loading');
+    }
+  });
+
+  // ── Pre-fill pay link if user needs to complete payment ──────────────
+  payLink.href = window.location.href; // same page — they'll reload after paying
+</script>
+</body>
+</html>
