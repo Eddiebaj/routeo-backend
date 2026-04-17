@@ -23,7 +23,7 @@ const RT_TTL = 30000; // 30 seconds
 // ── Ghost bus detection: track previous arrivals per stop ──────
 // { [stopId]: { arrivals: [{routeId, tripId, minsAway}], ts: timestamp } }
 const prevArrivalsCache = {};
-const PREV_CACHE_TTL = 120000; // 2 minutes — matches ~4 refresh cycles
+const PREV_CACHE_TTL = 300000; // 5 minutes — aligned with ghost detection window (minsAway <= 5)
 const PREV_CACHE_MAX = 500; // max stops tracked — prune oldest beyond this
 
 function pruneArrivalsCache() {
@@ -47,6 +47,7 @@ function pruneArrivalsCache() {
 // ── STO headsign lookup (cached in module scope, refreshed daily) ──
 let stoTripsMap = {};      // { [trip_id]: headsign }
 let stoTripsLoadedAt = 0;  // timestamp of last load
+let stoTripsLoading = false; // lock: prevents concurrent zip downloads
 const STO_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
 function parseCSVLine(line) {
@@ -66,6 +67,9 @@ async function getSTOTripsMap() {
   if (Object.keys(stoTripsMap).length > 0 && Date.now() - stoTripsLoadedAt < STO_CACHE_TTL) {
     return stoTripsMap;
   }
+  // Lock: if another request is already downloading, return stale cache immediately
+  if (stoTripsLoading) return stoTripsMap;
+  stoTripsLoading = true;
   try {
     const resp = await fetch(STO_GTFS_ZIP_URL, { signal: AbortSignal.timeout(15000) });
     if (!resp.ok) throw new Error(`STO GTFS zip HTTP ${resp.status}`);
@@ -90,6 +94,8 @@ async function getSTOTripsMap() {
   } catch (err) {
     console.error('STO trips.txt load failed:', err.message);
     // Keep stale cache if available
+  } finally {
+    stoTripsLoading = false;
   }
   return stoTripsMap;
 }
@@ -842,9 +848,22 @@ module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cache-Control', 'public, s-maxage=30, stale-while-revalidate=60');
 
-  // Premium departure cap: free=2, premium=20
-  const isPremium = req.query.premium === 'true';
-  const arrivalLimit = isPremium ? 20 : 2;
+  // Premium departure cap: free=2, premium=20.
+  // PREMIUM_ENABLED is currently false — all users get premium access.
+  // When the flag is turned on, verify device_id against push_tokens.is_premium
+  // (populated by RevenueCat webhook) instead of trusting a client-supplied param.
+  let arrivalLimit = 20; // default: all users premium while flag is off
+  const deviceId = req.query.device_id;
+  if (deviceId && /^[a-zA-Z0-9_-]{8,64}$/.test(deviceId)) {
+    const { data: tokenRow } = await supabase
+      .from('push_tokens')
+      .select('is_premium')
+      .eq('device_id', deviceId)
+      .maybeSingle();
+    // is_premium column does not exist yet — tokenRow will be null or lack the field.
+    // Safe default: treat as premium while PREMIUM_ENABLED=false.
+    if (tokenRow?.is_premium === false) arrivalLimit = 2;
+  }
 
   // ── Batch mode: ?stops=3017,3000,9942 ───────────────────
   const stopsParam = req.query.stops;
