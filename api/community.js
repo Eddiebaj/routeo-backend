@@ -533,9 +533,9 @@ async function handler(req, res) {
         if (venue_name.length > 100 || deal_description.length > 500) {
           return res.status(400).json({ error: 'venue_name max 100 chars, deal_description max 500 chars' });
         }
-        // Validate photo size (max ~2MB base64 ≈ 2.7M chars)
-        if (photo_base64 && photo_base64.length > 2800000) {
-          return res.status(400).json({ error: 'Photo too large (max 2MB)' });
+        // Validate photo size (max ~500KB base64 ≈ 680K chars)
+        if (photo_base64 && photo_base64.length > 680000) {
+          return res.status(400).json({ error: 'Photo too large (max 500KB)' });
         }
 
         // Upload photo to Supabase Storage if provided

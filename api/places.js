@@ -12,6 +12,8 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
+const parseTransitCooldowns = new Map();
+
 function sanitizeRadius(raw) {
   if (raw == null || raw === '') return 1500;
   const n = parseInt(raw, 10);
@@ -49,8 +51,32 @@ module.exports = async function handler(req, res) {
   if (action === 'parse-transit') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'POST required' });
     if (!ANTHROPIC_KEY) return res.status(500).json({ error: 'No ANTHROPIC_API_KEY env var' });
-    const { transcript, language } = req.body || {};
+    const { transcript, language, device_id } = req.body || {};
     if (!transcript || typeof transcript !== 'string') return res.status(400).json({ error: 'Missing transcript' });
+
+    // Rate limit: 60s per device_id
+    if (device_id && typeof device_id === 'string' && /^[a-zA-Z0-9_-]{8,64}$/.test(device_id)) {
+      const key = `parse-transit:${device_id}`;
+      const now = Date.now();
+      const last = parseTransitCooldowns.get(key);
+      if (last && now - last < 60000) {
+        return res.status(429).json({ error: 'Too many voice queries, please wait' });
+      }
+      parseTransitCooldowns.set(key, now);
+      // Prune stale entries occasionally
+      if (parseTransitCooldowns.size > 500) {
+        for (const [k, ts] of parseTransitCooldowns) {
+          if (now - ts > 60000) parseTransitCooldowns.delete(k);
+        }
+      }
+    }
+
+    // Skip Claude if transcript is too short to be meaningful (< 5 words)
+    const wordCount = transcript.trim().split(/\s+/).filter(Boolean).length;
+    if (wordCount < 5) {
+      return res.status(200).json({ from: null, to: null });
+    }
+
     try {
       const claudeResp = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
