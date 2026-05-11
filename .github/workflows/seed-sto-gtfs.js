@@ -4,7 +4,8 @@ const https = require('https');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY
+  process.env.SUPABASE_SERVICE_KEY,
+  { auth: { persistSession: false }, realtime: { transport: WebSocket } }
 );
 
 const STO_GTFS_URL = 'https://contenu.sto.ca/GTFS/GTFS.zip';
