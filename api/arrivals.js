@@ -208,7 +208,6 @@ async function fetchGtfsRtData() {
     headers: { 'Ocp-Apim-Subscription-Key': OC_TU_KEY },
     signal: AbortSignal.timeout(8000),
   });
-  console.log(`[oc-rt] fetch status=${resp.status}`);
   if (!resp.ok) throw new Error(`GTFS-RT ${resp.status}`);
   const data = await resp.json();
   // Only cache if response has actual trip updates — don't poison cache with empty/truncated feeds
@@ -538,7 +537,6 @@ async function fetchArrivalsForStop(stopId, arrivalLimit = 8) {
 
   // ── OC Transpo stop flow ───────────────────────────────────
   // Skip realtime entirely if API key is missing — go straight to static
-  console.log(`[oc-rt] OC_TU_KEY=${OC_TU_KEY ? OC_TU_KEY.slice(0,8)+'...' : 'MISSING'} URL=${GTFS_RT_URL}`);
   if (OC_TU_KEY) {
     try {
       const rtArrivals = await fetchRealtime(stopId);
