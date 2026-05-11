@@ -14,7 +14,7 @@ const OC_TU_KEY = process.env.OC_TRANSPO_TU_KEY; // TripUpdates (separate produc
 
 const AdmZip = require('adm-zip');
 
-const GTFS_RT_URL = 'https://nextrip-public-api.azure-api.net/octranspo/gtfs-rt-tu/beta/v1/TripUpdates?format=json';
+const GTFS_RT_URL = 'https://nextrip-public-api.azure-api.net/octranspo/gtfs-rt-tp/beta/v1/TripUpdates?format=json';
 const STO_GTFS_ZIP_URL = 'https://www.contenu.sto.ca/GTFS/GTFS.zip';
 
 // Module-level cache for OC Transpo GTFS-RT feed (shared across concurrent requests)
