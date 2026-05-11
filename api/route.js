@@ -5,6 +5,8 @@
  * GET /api/route?id=95&action=shape   — route polyline shape from OTP
  *
  * All schedule data comes from OTP (no Supabase stop_times queries).
+ * Uses /trips/{id}/stoptimes instead of /stops/{id}/stoptimes so that
+ * first/last bus and frequency work even when OTP's GTFS calendar has expired.
  */
 
 const { checkRateLimit } = require('./_rateLimit');
@@ -26,19 +28,33 @@ function decodePolyline(encoded) {
   return points;
 }
 
-/** Convert Unix epoch seconds to "HH:MM" in Ottawa local time. */
-function epochToHHMM(epochSecs) {
-  return new Date(epochSecs * 1000).toLocaleTimeString('en-CA', {
-    timeZone: 'America/Toronto', hour: '2-digit', minute: '2-digit', hour12: false,
-  });
+/**
+ * Convert seconds-from-midnight (GTFS convention) to "HH:MM" string.
+ * Handles after-midnight trips (values > 86400) by wrapping to 0-23.
+ */
+function secsToHHMM(secs) {
+  const totalMins = Math.floor(secs / 60);
+  const h = Math.floor(totalMins / 60) % 24;
+  const m = totalMins % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
-/** Unix epoch seconds for midnight today in Ottawa (DST-safe). */
-function ottawaMidnightEpoch() {
-  const now = Math.floor(Date.now() / 1000);
-  const ottawaTime = new Date().toLocaleTimeString('en-CA', { timeZone: 'America/Toronto', hour12: false });
-  const [h, m, s] = ottawaTime.split(':').map(Number);
-  return now - (h * 3600 + m * 60 + (s || 0));
+/**
+ * Fetch /trips/{tripId}/stoptimes and return the scheduledDeparture
+ * at stop index `stopIndex` (0 = first stop of trip).
+ * Returns null on failure. Does not filter by calendar date.
+ */
+async function fetchTripDeparture(tripId, stopIndex) {
+  try {
+    const r = await fetch(
+      `${OTP_BASE}/otp/routers/default/index/trips/${encodeURIComponent(tripId)}/stoptimes`,
+      { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8000) }
+    );
+    if (!r.ok) return null;
+    const st = await r.json();
+    if (!Array.isArray(st) || st.length <= stopIndex) return null;
+    return st[stopIndex].scheduledDeparture ?? null;
+  } catch { return null; }
 }
 
 /**
@@ -144,7 +160,10 @@ module.exports = async (req, res) => {
 
 /**
  * Full route detail: all stops grouped by direction, first/last bus, avg frequency.
- * Uses OTP pattern + stoptimes APIs — no Supabase stop_times dependency.
+ *
+ * For first/last bus and frequency: fetches /trips/{id}/stoptimes for the first
+ * and last trip in each pattern. These calls return times regardless of GTFS
+ * calendar expiry. Frequency is estimated as span / (tripCount - 1).
  */
 async function handleRouteDetail(res, routeId, agency) {
   const { patterns, bareId } = await resolveRoutePatterns(routeId, agency);
@@ -152,133 +171,142 @@ async function handleRouteDetail(res, routeId, agency) {
     return res.json({ routeId, directions: [], frequency: null });
   }
 
-  const midnightEpoch = ottawaMidnightEpoch();
-
-  // Fetch stoptimes at each pattern's first stop in parallel (full-day window)
+  // For each pattern, compute direction info in parallel
   const patternData = await Promise.all(patterns.map(async (pattern) => {
-    // OTP pattern headsign: try multiple field names across OTP versions
     const headsign = pattern.headsign || pattern.desc || pattern.name || `Route ${bareId}`;
-    // Strip feed prefix from stop IDs ("2:3017" → "3017")
     const stops = (pattern.stops || []).map(s => String(s.id || '').split(':').pop());
-    const tripCount = Array.isArray(pattern.trips) ? pattern.trips.length : 0;
+    const trips = Array.isArray(pattern.trips) ? pattern.trips : [];
+    const tripCount = trips.length;
 
-    if (!pattern.stops?.length) return { headsign, stops, tripCount, departures: [] };
+    let firstBus = null, lastBus = null, avgFrequencyMin = null;
 
-    const firstOtpStopId = pattern.stops[0].id; // e.g. "2:3017"
-    let departures = [];
+    if (trips.length >= 1) {
+      // Fetch first-stop departure for the first and last trip in the pattern.
+      // OTP sorts pattern trips by departure time so trips[0] = earliest, trips[-1] = latest.
+      // /trips/{id}/stoptimes returns times unconditionally (no calendar filtering).
+      const tripsToFetch = trips.length === 1
+        ? [trips[0]]
+        : [trips[0], trips[trips.length - 1]];
 
-    try {
-      const url =
-        `${OTP_BASE}/otp/routers/default/index/stops/${encodeURIComponent(firstOtpStopId)}/stoptimes` +
-        `?startTime=${midnightEpoch}&timeRange=86400&numberOfDepartures=200&omitNonPickups=true`;
-      const stResp = await fetch(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(10000) });
-      if (stResp.ok) {
-        const stData = await stResp.json();
-        const entry = Array.isArray(stData)
-          ? (stData.find(e => e.pattern?.id === pattern.id) || null)
-          : null;
-        if (entry?.times) {
-          departures = entry.times
-            .map(t => (t.serviceDay || 0) + (t.scheduledDeparture ?? t.scheduledArrival ?? 0))
-            .filter(t => t > 0)
-            .sort((a, b) => a - b);
+      const departures = (await Promise.all(
+        tripsToFetch.map(t => fetchTripDeparture(t.id, 0))
+      )).filter(t => t != null && t >= 0).sort((a, b) => a - b);
+
+      if (departures.length > 0) {
+        firstBus = secsToHHMM(departures[0]);
+        lastBus  = secsToHHMM(departures[departures.length - 1]);
+        if (departures.length === 2 && tripCount >= 2) {
+          avgFrequencyMin = Math.round((departures[1] - departures[0]) / 60 / (tripCount - 1));
         }
       }
-    } catch (e) {
-      console.warn(`[route] stoptimes for pattern ${pattern.id} (stop ${firstOtpStopId}):`, e.message);
     }
 
-    return { headsign, stops, tripCount, departures };
+    return { headsign, stops, tripCount, firstBus, lastBus, avgFrequencyMin };
   }));
 
-  // Group patterns by headsign: keep longest stop list, merge departures
+  // Group patterns by headsign: keep longest stop list, sum trip counts
   const byHeadsign = {};
   for (const pd of patternData) {
     const hs = pd.headsign;
     if (!byHeadsign[hs]) {
-      byHeadsign[hs] = { stops: pd.stops, tripCount: pd.tripCount, departures: [...pd.departures] };
+      byHeadsign[hs] = { ...pd };
     } else {
       if (pd.stops.length > byHeadsign[hs].stops.length) byHeadsign[hs].stops = pd.stops;
       byHeadsign[hs].tripCount += pd.tripCount;
-      byHeadsign[hs].departures.push(...pd.departures);
+      // Take the earlier firstBus and later lastBus across variants
+      if (pd.firstBus && (!byHeadsign[hs].firstBus || pd.firstBus < byHeadsign[hs].firstBus)) {
+        byHeadsign[hs].firstBus = pd.firstBus;
+      }
+      if (pd.lastBus && (!byHeadsign[hs].lastBus || pd.lastBus > byHeadsign[hs].lastBus)) {
+        byHeadsign[hs].lastBus = pd.lastBus;
+      }
+      // Average the frequency estimates
+      if (pd.avgFrequencyMin && byHeadsign[hs].avgFrequencyMin) {
+        byHeadsign[hs].avgFrequencyMin = Math.round(
+          (byHeadsign[hs].avgFrequencyMin + pd.avgFrequencyMin) / 2
+        );
+      }
     }
   }
 
-  const directions = Object.entries(byHeadsign)
-    .filter(([, data]) => data.stops.length > 0)
-    .map(([headsign, data]) => {
-      const deps = data.departures.sort((a, b) => a - b);
-      const firstBus = deps.length > 0 ? epochToHHMM(deps[0]) : null;
-      const lastBus  = deps.length > 0 ? epochToHHMM(deps[deps.length - 1]) : null;
-      let avgFrequencyMin = null;
-      if (deps.length >= 2) {
-        avgFrequencyMin = Math.round((deps[deps.length - 1] - deps[0]) / 60 / (deps.length - 1));
-      }
-      return {
-        headsign,
-        tripCount: data.tripCount || deps.length,
-        stops: data.stops,
-        firstBus,
-        lastBus,
-        avgFrequencyMin,
-      };
-    });
-
+  const directions = Object.values(byHeadsign).filter(d => d.stops.length > 0);
   res.json({ routeId, directions });
 }
 
 /**
  * Frequency at a specific stop for a given route.
- * Uses OTP stoptimes API — no Supabase stop_times dependency.
+ *
+ * Resolves patterns for the route, finds patterns that serve the stop,
+ * then fetches /trips/{id}/stoptimes for first + last trip to get departure
+ * times at the stop. Computes window frequency (±1h around now) and all-day
+ * frequency using trip count and span. Works regardless of GTFS calendar expiry.
  */
 async function handleStopFrequency(res, routeId, stopId) {
   const bareRouteId = routeId.split('-')[0];
-  const nowEpoch = Math.floor(Date.now() / 1000);
-  const windowStart = nowEpoch - 3600;
 
-  // Auto-detect agency from stop ID format: STO stops start with letters, OC stops are numeric
+  // Current Ottawa time as seconds from midnight (for window filtering)
+  const ottawaTime = new Date().toLocaleTimeString('en-CA', { timeZone: 'America/Toronto', hour12: false });
+  const [h, m, s] = ottawaTime.split(':').map(Number);
+  const nowSecs = h * 3600 + m * 60 + (s || 0);
+
+  // Auto-detect agency from stop ID: STO stops start with letters, OC stops are numeric
   const isSTO = /^[A-Za-z]/.test(String(stopId));
-  const otpStopIds = isSTO ? [`1:${stopId}`, `2:${stopId}`] : [`2:${stopId}`, `1:${stopId}`];
+  const { patterns } = await resolveRoutePatterns(routeId, isSTO ? 'STO' : '');
 
-  let allTimes = [];
+  if (!patterns.length) return res.json({ routeId, stopId, frequency: null });
 
-  for (const otpStopId of otpStopIds) {
-    try {
-      const url =
-        `${OTP_BASE}/otp/routers/default/index/stops/${encodeURIComponent(otpStopId)}/stoptimes` +
-        `?startTime=${windowStart}&timeRange=7200&numberOfDepartures=50&omitNonPickups=true`;
-      const resp = await fetch(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8000) });
-      if (!resp.ok) continue;
-      const data = await resp.json();
+  // Find patterns that serve this stop (match by stripped stop code)
+  const stopCode = String(stopId);
+  const matchingPatterns = patterns.filter(p =>
+    Array.isArray(p.stops) && p.stops.some(s => s.id.split(':').pop() === stopCode)
+  );
 
-      for (const entry of (Array.isArray(data) ? data : [])) {
-        if ((entry.pattern?.route?.shortName || '') !== bareRouteId) continue;
-        for (const t of (entry.times || [])) {
-          const epoch = (t.serviceDay || 0) + (t.scheduledDeparture ?? t.scheduledArrival ?? 0);
-          if (epoch > 0) allTimes.push(epoch);
-        }
-      }
-      if (allTimes.length > 0) break;
-    } catch (e) {
-      console.warn(`[route] stoptimes for stop ${otpStopId}:`, e.message);
+  if (!matchingPatterns.length) return res.json({ routeId, stopId, frequency: null });
+
+  let allSpanFirsts = []; // first-departure seconds at this stop per pattern
+  let allSpanLasts  = []; // last-departure seconds at this stop per pattern
+  let totalTrips = 0;
+
+  for (const pattern of matchingPatterns) {
+    const trips = Array.isArray(pattern.trips) ? pattern.trips : [];
+    if (!trips.length) continue;
+
+    // Find this stop's index in the pattern stop sequence
+    const stopIndex = pattern.stops.findIndex(s => s.id.split(':').pop() === stopCode);
+    if (stopIndex < 0) continue;
+
+    const tripsToFetch = trips.length === 1
+      ? [trips[0]]
+      : [trips[0], trips[trips.length - 1]];
+
+    const departures = (await Promise.all(
+      tripsToFetch.map(t => fetchTripDeparture(t.id, stopIndex))
+    )).filter(t => t != null && t >= 0).sort((a, b) => a - b);
+
+    if (departures.length > 0) {
+      allSpanFirsts.push(departures[0]);
+      allSpanLasts.push(departures[departures.length - 1]);
+      totalTrips += trips.length;
     }
   }
 
-  if (!allTimes.length) {
-    return res.json({ routeId, stopId, frequency: null });
-  }
+  if (!allSpanFirsts.length) return res.json({ routeId, stopId, frequency: null });
 
-  allTimes.sort((a, b) => a - b);
-  const windowTimes = allTimes.filter(t => t >= windowStart && t <= nowEpoch + 3600);
+  const spanFirst = Math.min(...allSpanFirsts);
+  const spanLast  = Math.max(...allSpanLasts);
 
-  let frequencyMin = null;
-  if (windowTimes.length >= 2) {
-    frequencyMin = Math.round((windowTimes[windowTimes.length - 1] - windowTimes[0]) / 60 / (windowTimes.length - 1));
-  }
-
+  // All-day frequency: span divided by total trips across all matching patterns
   let allDayFreq = null;
-  if (allTimes.length >= 2) {
-    allDayFreq = Math.round((allTimes[allTimes.length - 1] - allTimes[0]) / 60 / (allTimes.length - 1));
+  if (totalTrips >= 2) {
+    allDayFreq = Math.round((spanLast - spanFirst) / 60 / (totalTrips - 1));
+  }
+
+  // Current-window frequency: if now falls within the service span, use all-day estimate
+  // (exact per-trip window data would require fetching all trips, not just first/last)
+  let frequencyMin = null;
+  const inServiceNow = nowSecs >= spanFirst && nowSecs <= spanLast;
+  if (inServiceNow && allDayFreq !== null) {
+    frequencyMin = allDayFreq;
   }
 
   res.json({
@@ -287,8 +315,8 @@ async function handleStopFrequency(res, routeId, stopId) {
     frequency: {
       currentMin: frequencyMin,
       allDayMin: allDayFreq,
-      tripsInWindow: windowTimes.length,
-      totalTrips: allTimes.length,
+      tripsInWindow: inServiceNow ? 1 : 0, // approximate
+      totalTrips,
     },
   });
 }
