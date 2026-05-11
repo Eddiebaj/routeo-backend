@@ -208,10 +208,8 @@ async function fetchGtfsRtData() {
     headers: { 'Ocp-Apim-Subscription-Key': OC_TU_KEY },
     signal: AbortSignal.timeout(8000),
   });
-  const rawText = await resp.text();
-  console.log(`[gtfs-rt-tu] status=${resp.status} key=${OC_TU_KEY ? OC_TU_KEY.slice(0,8)+'...' : 'MISSING'} body=${rawText.slice(0,300)}`);
-  if (!resp.ok) throw new Error(`GTFS-RT ${resp.status}: ${rawText.slice(0,200)}`);
-  const data = JSON.parse(rawText);
+  if (!resp.ok) throw new Error(`GTFS-RT ${resp.status}`);
+  const data = await resp.json();
   // Only cache if response has actual trip updates — don't poison cache with empty/truncated feeds
   if (data?.Entity?.length > 0) {
     rtCache = { data, ts: Date.now() };
