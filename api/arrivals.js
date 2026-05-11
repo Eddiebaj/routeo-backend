@@ -537,7 +537,7 @@ async function fetchArrivalsForStop(stopId, arrivalLimit = 8) {
 
   // ── OC Transpo stop flow ───────────────────────────────────
   // Skip realtime entirely if API key is missing — go straight to static
-  if (OC_KEY) {
+  if (OC_TU_KEY) {
     try {
       const rtArrivals = await fetchRealtime(stopId);
       if (rtArrivals.length > 0) {
@@ -550,7 +550,7 @@ async function fetchArrivalsForStop(stopId, arrivalLimit = 8) {
       console.warn(`[arrivals] GTFS-RT failed for stop ${stopId}:`, err.message);
     }
   } else {
-    console.warn(`[arrivals] OC_TRANSPO_API_KEY not set, skipping realtime for stop ${stopId}`);
+    console.warn(`[arrivals] OC_TRANSPO_TU_KEY not set, skipping realtime for stop ${stopId}`);
   }
 
   await Promise.all([ghostPromise, freshnessPromise, reliabilityPromise]);
