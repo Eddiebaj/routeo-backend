@@ -9,7 +9,8 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
-const OC_KEY = process.env.OC_TRANSPO_API_KEY;
+const OC_KEY = process.env.OC_TRANSPO_API_KEY;   // VehiclePositions
+const OC_TU_KEY = process.env.OC_TRANSPO_TU_KEY; // TripUpdates (separate product)
 
 const AdmZip = require('adm-zip');
 
@@ -204,7 +205,7 @@ async function fetchGtfsRtData() {
     return rtCache.data;
   }
   const resp = await fetch(GTFS_RT_URL, {
-    headers: { 'Ocp-Apim-Subscription-Key': OC_KEY },
+    headers: { 'Ocp-Apim-Subscription-Key': OC_TU_KEY },
     signal: AbortSignal.timeout(8000),
   });
   if (!resp.ok) throw new Error(`GTFS-RT ${resp.status}`);
@@ -218,7 +219,7 @@ async function fetchGtfsRtData() {
 
 // ── Fetch OC Transpo GTFS-RT live predictions ──────────────────
 async function fetchRealtime(stopId) {
-  if (!OC_KEY) { console.warn('OC_TRANSPO_API_KEY not set'); return []; }
+  if (!OC_TU_KEY) { console.warn('OC_TRANSPO_TU_KEY not set'); return []; }
   const stopIds = MULTI_PLATFORM_STOPS[stopId] || [stopId];
   const stopSet = new Set(stopIds.map(String));
 
