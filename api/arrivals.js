@@ -1,6 +1,6 @@
 const { checkRateLimit } = require('./_rateLimit');
 const { buildStoUrl } = require('./_sto');
-const { timeToMins } = require('./_gtfs');
+
 const { createClient } = require('@supabase/supabase-js');
 const GtfsRealtimeBindings = require('gtfs-realtime-bindings');
 
@@ -100,114 +100,6 @@ async function getSTOTripsMap() {
   return stoTripsMap;
 }
 
-// ── Fetch STO static schedule from Supabase (mirrors OC fetchStatic) ──
-async function fetchSTOStatic(stopId) {
-  const ottawaNow = new Date().toLocaleTimeString('en-CA', { timeZone: 'America/Toronto', hour12: false });
-  const [h, m] = ottawaNow.split(':').map(Number);
-  const currentMins = h * 60 + m;
-  const maxMins = currentMins + 90;
-  const isAfterMidnight = h < 4;
-  const afterMidnightCurrentMins = isAfterMidnight ? currentMins + 1440 : 0;
-  const afterMidnightMaxMins = isAfterMidnight ? afterMidnightCurrentMins + 90 : 0;
-  // Debug: fetchSTOStatic params logged only in dev
-
-  const fmtTime = (mins) => {
-    const hh = String(Math.floor(mins / 60)).padStart(2, '0');
-    const mm = String(mins % 60).padStart(2, '0');
-    return `${hh}:${mm}:00`;
-  };
-  const timeFrom = fmtTime(currentMins);
-  const timeTo = fmtTime(maxMins);
-
-  // Query Supabase stop_times filtered by agency='STO'
-  let allData = [];
-  const { data: rows, error: err } = await supabase
-    .from('stop_times')
-    .select('arrival_time, route_id, headsign, service_id, trip_id, stop_id')
-    .eq('stop_id', stopId)
-    .eq('agency', 'STO')
-    .gte('arrival_time', timeFrom)
-    .lte('arrival_time', timeTo)
-    .order('arrival_time', { ascending: true })
-    .limit(200)
-    .abortSignal(AbortSignal.timeout(5000));
-  if (err) throw new Error(err.message);
-  if (rows) allData.push(...rows);
-
-  // After-midnight: also query 24+ hour range
-  if (isAfterMidnight) {
-    const amFrom = fmtTime(afterMidnightCurrentMins);
-    const amTo = fmtTime(afterMidnightMaxMins);
-    const { data: amRows, error: amErr } = await supabase
-      .from('stop_times')
-      .select('arrival_time, route_id, headsign, service_id, trip_id, stop_id')
-      .eq('stop_id', stopId)
-      .eq('agency', 'STO')
-      .gte('arrival_time', amFrom)
-      .lte('arrival_time', amTo)
-      .order('arrival_time', { ascending: true })
-      .limit(100)
-      .abortSignal(AbortSignal.timeout(5000));
-    if (!amErr && amRows) allData.push(...amRows);
-  }
-
-  allData.sort((a, b) => (a.arrival_time || '').localeCompare(b.arrival_time || ''));
-  // fetchSTOStatic: raw row count suppressed in prod
-
-  const allRows = allData.map(row => ({ ...row, mins: timeToMins(row.arrival_time) }));
-  const inWindow = allRows.filter(row =>
-    (row.mins >= currentMins && row.mins <= maxMins) ||
-    (isAfterMidnight && row.mins >= afterMidnightCurrentMins && row.mins <= afterMidnightMaxMins)
-  );
-
-  // Filter by service day
-  const todayKeyword = getTodayServiceKeyword();
-  const yesterdayKeyword = getYesterdayServiceKeyword();
-  let finalRows = inWindow.filter(row => {
-    if (row.mins >= 1440) {
-      return row.service_id ? row.service_id.toLowerCase().includes(yesterdayKeyword) : true;
-    }
-    return row.service_id ? row.service_id.toLowerCase().includes(todayKeyword) : true;
-  });
-  // fetchSTOStatic: final row count suppressed in prod
-
-  // Enrich headsigns from trips table
-  const tripIds = [...new Set(finalRows.map(r => r.trip_id).filter(Boolean))];
-  let tripsMap = {};
-  if (tripIds.length > 0) {
-    try {
-      const { data: tripData } = await supabase
-        .from('trips')
-        .select('trip_id, headsign, route_id')
-        .in('trip_id', tripIds)
-        .abortSignal(AbortSignal.timeout(5000));
-      if (tripData) for (const t of tripData) tripsMap[t.trip_id] = t;
-    } catch (e) { console.warn('STO trips lookup timed out:', e.message); }
-  }
-
-  // Deduplicate by route + arrival time
-  const seen = new Set();
-  return finalRows
-    .filter(row => {
-      const key = `${row.route_id}-${row.arrival_time}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    })
-    .slice(0, 8)
-    .map(row => {
-      const trip = tripsMap[row.trip_id] || {};
-      return {
-        stopId,
-        routeId: row.route_id,
-        tripId: row.trip_id,
-        headsign: cleanHeadsign(trip.headsign || row.headsign || '', row.route_id),
-        scheduledTime: row.arrival_time,
-        minsAway: (isAfterMidnight && row.mins >= 1440) ? row.mins - afterMidnightCurrentMins : row.mins - currentMins,
-      };
-    });
-}
-
 // ── STO stop detection ─────────────────────────────────────────
 // STO stops use alphanumeric IDs that start with letters (e.g. "AAAA", "STOP1")
 // OC Transpo stops are purely numeric (e.g. "3000", "9942") or alphanumeric LRT
@@ -304,29 +196,6 @@ function cleanHeadsign(headsign, routeId) {
   if (!headsign || headsign.trim() === '') return `Route ${routeId}`;
   const cleaned = headsign.replace(/^\d+\s*[-–]\s*/, '').trim();
   return cleaned || `Route ${routeId}`;
-}
-
-function getTodayServiceKeyword() {
-  // Use Toronto timezone — Vercel runs in UTC, which can be a different day
-  const ottawaDay = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Toronto', weekday: 'long' }).toLowerCase();
-  if (ottawaDay === 'sunday') return 'sunday';
-  if (ottawaDay === 'saturday') return 'saturday';
-  return 'weekday';
-}
-
-function serviceMatchesToday(serviceId) {
-  if (!serviceId) return true;
-  return serviceId.toLowerCase().includes(getTodayServiceKeyword());
-}
-
-function getYesterdayServiceKeyword() {
-  // For after-midnight trips: determine what service ran "yesterday" in Ottawa
-  const now = new Date();
-  const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-  const yDay = yesterday.toLocaleDateString('en-CA', { timeZone: 'America/Toronto', weekday: 'long' }).toLowerCase();
-  if (yDay === 'sunday') return 'sunday';
-  if (yDay === 'saturday') return 'saturday';
-  return 'weekday';
 }
 
 // ── Fetch OC Transpo GTFS-RT feed (cached) ─────────────────────
@@ -498,137 +367,6 @@ async function fetchSTORealtime(stopId) {
   return unique;
 }
 
-// ── Fetch static GTFS schedule ────────────────────────────────
-async function fetchStatic(stopId) {
-  const ottawaNow = new Date().toLocaleTimeString('en-CA', { timeZone: 'America/Toronto', hour12: false });
-  const [h, m] = ottawaNow.split(':').map(Number);
-  const currentMins = h * 60 + m;
-  const maxMins = currentMins + 90;
-  // After-midnight support: GTFS uses times like 25:30 for post-midnight trips
-  // belonging to the previous calendar day's service. If it's before 4 AM,
-  // also check the 24+ hour range (previous day's after-midnight trips).
-  const isAfterMidnight = h < 4;
-  const afterMidnightCurrentMins = isAfterMidnight ? currentMins + 1440 : 0; // e.g., 1:30 AM = 1470
-  const afterMidnightMaxMins = isAfterMidnight ? afterMidnightCurrentMins + 90 : 0;
-  // Debug: fetchStatic params suppressed in prod
-
-  // Expand multi-platform stops (same as fetchRealtime)
-  const stopIds = MULTI_PLATFORM_STOPS[stopId] || [stopId];
-
-  // Build time range strings for server-side filtering (avoids 1000-row default limit)
-  const fmtTime = (mins) => {
-    const hh = String(Math.floor(mins / 60)).padStart(2, '0');
-    const mm = String(mins % 60).padStart(2, '0');
-    return `${hh}:${mm}:00`;
-  };
-  const timeFrom = fmtTime(currentMins);
-  const timeTo = fmtTime(maxMins);
-
-  // Query each platform separately and merge (avoids slow .in() on large stop_times table)
-  let allData = [];
-  for (const sid of stopIds) {
-    // Primary time window query
-    const { data: rows, error: err } = await supabase
-      .from('stop_times')
-      .select('arrival_time, route_id, headsign, service_id, trip_id, stop_id')
-      .eq('stop_id', sid)
-      .gte('arrival_time', timeFrom)
-      .lte('arrival_time', timeTo)
-      .order('arrival_time', { ascending: true })
-      .limit(200)
-      .abortSignal(AbortSignal.timeout(5000));
-    if (err) throw new Error(err.message);
-    if (rows) allData.push(...rows);
-
-    // After-midnight: also query 24+ hour range (e.g., 25:30-27:00)
-    if (isAfterMidnight) {
-      const amFrom = fmtTime(afterMidnightCurrentMins);
-      const amTo = fmtTime(afterMidnightMaxMins);
-      const { data: amRows, error: amErr } = await supabase
-        .from('stop_times')
-        .select('arrival_time, route_id, headsign, service_id, trip_id, stop_id')
-        .eq('stop_id', sid)
-        .gte('arrival_time', amFrom)
-        .lte('arrival_time', amTo)
-        .order('arrival_time', { ascending: true })
-        .limit(100)
-        .abortSignal(AbortSignal.timeout(5000));
-      if (!amErr && amRows) allData.push(...amRows);
-    }
-  }
-  // Sort merged results by arrival time
-  allData.sort((a, b) => (a.arrival_time || '').localeCompare(b.arrival_time || ''));
-  // fetchStatic: raw row count suppressed in prod
-
-  const allRows = allData.map(row => ({ ...row, mins: timeToMins(row.arrival_time) }));
-  // Normal window: e.g., 14:00-15:30 (currentMins to maxMins)
-  // After-midnight window: e.g., 1:30 AM = also check 25:30 (1470-1560) from previous day's service
-  const inWindow = allRows.filter(row =>
-    (row.mins >= currentMins && row.mins <= maxMins) ||
-    (isAfterMidnight && row.mins >= afterMidnightCurrentMins && row.mins <= afterMidnightMaxMins)
-  );
-  // fetchStatic: time window count suppressed in prod
-
-  // Filter by service: normal-range trips match today's service,
-  // after-midnight trips (mins >= 1440) match yesterday's service
-  const todayKeyword = getTodayServiceKeyword();
-  const yesterdayKeyword = getYesterdayServiceKeyword();
-  let finalRows = inWindow.filter(row => {
-    if (row.mins >= 1440) {
-      // After-midnight trip from previous calendar day's schedule
-      return row.service_id ? row.service_id.toLowerCase().includes(yesterdayKeyword) : true;
-    }
-    return row.service_id ? row.service_id.toLowerCase().includes(todayKeyword) : true;
-  });
-  // fetchStatic: service match count suppressed in prod
-
-  const tripIds = [...new Set(finalRows.map(r => r.trip_id).filter(Boolean))];
-  let tripsMap = {};
-  if (tripIds.length > 0) {
-    try {
-      const { data: tripData } = await supabase
-        .from('trips')
-        .select('trip_id, headsign, route_id')
-        .in('trip_id', tripIds)
-        .abortSignal(AbortSignal.timeout(5000));
-      if (tripData) for (const t of tripData) tripsMap[t.trip_id] = t;
-    } catch (e) { console.warn('trips lookup timed out:', e.message); }
-  }
-
-  // Normalize route_id for dedup: "1-350-1" → "1-350", "42-1" → "42"
-  function normalizeRouteId(rid) {
-    if (!rid) return rid;
-    // Strip trailing variant suffix: "1-350-1" → "1-350", "42-1" → "42"
-    // Pattern: if it ends with "-{digit(s)}" and has at least one other segment, strip it
-    const parts = rid.split('-');
-    if (parts.length >= 3) return parts.slice(0, -1).join('-'); // "1-350-1" → "1-350"
-    if (parts.length === 2 && /^\d+$/.test(parts[1]) && parts[1].length <= 2) return parts[0]; // "42-1" → "42"
-    return rid;
-  }
-
-  const seen = new Set();
-  return finalRows
-    .filter(row => {
-      // Dedup by normalized route + arrival time (prevents "1-350" and "1-350-1" duplicates)
-      const key = `${normalizeRouteId(row.route_id)}-${row.arrival_time}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    })
-    .slice(0, 8)
-    .map(row => {
-      const trip = tripsMap[row.trip_id] || {};
-      return {
-        stopId,
-        routeId: row.route_id,
-        tripId: row.trip_id,
-        headsign: cleanHeadsign(trip.headsign || row.headsign || '', row.route_id),
-        scheduledTime: row.arrival_time,
-        minsAway: (isAfterMidnight && row.mins >= 1440) ? row.mins - afterMidnightCurrentMins : row.mins - currentMins,
-      };
-    });
-}
-
 // ── Core per-stop logic (returns response object) ─────────
 async function fetchArrivalsForStop(stopId, arrivalLimit = 8) {
   const isSTO = isSTOStop(stopId);
@@ -788,19 +526,12 @@ async function fetchArrivalsForStop(stopId, arrivalLimit = 8) {
         const arrivals = stoArrivals.map(a => ({ ...a, source: 'sto-gtfs-rt' }));
         return buildResp({ stop: stopId, stopName, arrivals, source: 'sto-gtfs-rt', agency: 'STO', ghostReports });
       }
-      // STO GTFS-RT empty, falling back to static
+      // STO GTFS-RT empty
     } catch (err) {
       console.warn(`[arrivals] STO GTFS-RT failed for stop ${stopId}:`, err.message);
     }
-    try {
-      const staticArrivals = await fetchSTOStatic(stopId);
-      const arrivals = staticArrivals.map(a => ({ ...a, source: 'sto-gtfs-static', agency: 'STO' }));
-      await Promise.all([ghostPromise, freshnessPromise, reliabilityPromise]);
-      return buildResp({ stop: stopId, stopName, arrivals, source: 'sto-gtfs-static', agency: 'STO', ghostReports });
-    } catch (err) {
-      console.error('[arrivals] STO static fallback failed:', err.message);
-      return { stop: stopId, error: 'Internal server error' };
-    }
+    await Promise.all([ghostPromise, freshnessPromise, reliabilityPromise]);
+    return buildResp({ stop: stopId, stopName, arrivals: [], source: 'sto-gtfs-rt-empty', agency: 'STO', ghostReports });
   }
 
   // ── OC Transpo stop flow ───────────────────────────────────
@@ -813,7 +544,7 @@ async function fetchArrivalsForStop(stopId, arrivalLimit = 8) {
         const arrivals = rtArrivals.map(a => ({ ...a, source: 'gtfs-rt' }));
         return buildResp({ stop: stopId, stopName, arrivals, source: 'gtfs-rt', ghostReports });
       }
-      // OC GTFS-RT empty, falling back to static
+      // OC GTFS-RT empty
     } catch (err) {
       console.warn(`[arrivals] GTFS-RT failed for stop ${stopId}:`, err.message);
     }
@@ -821,14 +552,8 @@ async function fetchArrivalsForStop(stopId, arrivalLimit = 8) {
     console.warn(`[arrivals] OC_TRANSPO_API_KEY not set, skipping realtime for stop ${stopId}`);
   }
 
-  try {
-    const staticArrivals = await fetchStatic(stopId);
-    const arrivals = staticArrivals.map(a => ({ ...a, source: 'gtfs-static' }));
-    await Promise.all([ghostPromise, freshnessPromise, reliabilityPromise]);
-    return buildResp({ stop: stopId, stopName, arrivals, source: 'gtfs-static', ghostReports });
-  } catch (err) {
-    return { stop: stopId, error: 'Internal server error' };
-  }
+  await Promise.all([ghostPromise, freshnessPromise, reliabilityPromise]);
+  return buildResp({ stop: stopId, stopName, arrivals: [], source: 'gtfs-rt-empty', ghostReports });
 }
 
 // ── Fire-and-forget request logging ───────────────────────
