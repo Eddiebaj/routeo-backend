@@ -193,6 +193,30 @@ const MULTI_PLATFORM_STOPS = {
   'EE995': ['9872','9873','9922','9961','9963','10144','10149','EE990','EE995'],
 };
 
+// ── OC stop_code → stop_id[] resolver (Supabase-backed, 24h cache) ──
+// OC Transpo renumbered internal stop IDs; users pass stop_codes (e.g. "3000")
+// but the GTFS-RT feed uses stop_id (e.g. "3585", "9449"). Look up the mapping.
+const ocStopCodeCache = {}; // { [stop_code]: { ids: string[], ts: number } }
+const OC_STOP_CODE_TTL = 24 * 60 * 60 * 1000;
+
+async function resolveOCStopIds(stopCode) {
+  const hit = ocStopCodeCache[stopCode];
+  if (hit && Date.now() - hit.ts < OC_STOP_CODE_TTL) return hit.ids;
+  try {
+    const { data } = await supabase
+      .from('stops')
+      .select('stop_id')
+      .eq('stop_code', stopCode)
+      .eq('agency', 'OC');
+    const ids = (data || []).map(r => String(r.stop_id)).filter(Boolean);
+    const result = ids.length > 0 ? ids : [stopCode];
+    ocStopCodeCache[stopCode] = { ids: result, ts: Date.now() };
+    return result;
+  } catch {
+    return [stopCode];
+  }
+}
+
 function cleanHeadsign(headsign, routeId) {
   if (!headsign || headsign.trim() === '') return `Route ${routeId}`;
   const cleaned = headsign.replace(/^\d+\s*[-–]\s*/, '').trim();
@@ -225,8 +249,8 @@ async function fetchGtfsRtData() {
 // ── Fetch OC Transpo GTFS-RT live predictions ──────────────────
 async function fetchRealtime(stopId) {
   if (!OC_TU_KEY) { console.warn('OC_TRANSPO_TU_KEY not set'); return []; }
-  const stopIds = MULTI_PLATFORM_STOPS[stopId] || [stopId];
-  const stopSet = new Set(stopIds.map(String));
+  const stopIds = await resolveOCStopIds(stopId);
+  const stopSet = new Set(stopIds);
 
   const data = await fetchGtfsRtData();
 
@@ -397,8 +421,8 @@ async function fetchArrivalsForStop(stopId, arrivalLimit = 8) {
     const { data: stopRow } = await supabase.from('stops').select('stop_name').eq('stop_id', stopId).single();
     if (stopRow) stopName = stopRow.stop_name;
     if (!stopName) {
-      const platforms = MULTI_PLATFORM_STOPS[stopId];
-      if (platforms) {
+      const platforms = await resolveOCStopIds(stopId);
+      if (platforms.length > 1 || platforms[0] !== stopId) {
         const { data: platRows } = await supabase.from('stops').select('stop_name').in('stop_id', platforms).limit(1);
         if (platRows?.[0]) stopName = platRows[0].stop_name;
       }

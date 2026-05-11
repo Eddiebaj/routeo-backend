@@ -44,10 +44,11 @@ async function seedStops(zip) {
   const stopsRaw = zip.readAsText('stops.txt');
   const lines = stopsRaw.trim().split('\n');
   const headers = lines[0].replace(/\r/g, '').split(',');
-  const idIdx = headers.indexOf('stop_id');
+  const idIdx   = headers.indexOf('stop_id');
+  const codeIdx = headers.indexOf('stop_code');
   const nameIdx = headers.indexOf('stop_name');
-  const latIdx = headers.indexOf('stop_lat');
-  const lonIdx = headers.indexOf('stop_lon');
+  const latIdx  = headers.indexOf('stop_lat');
+  const lonIdx  = headers.indexOf('stop_lon');
 
   const stopRows = [];
   for (let i = 1; i < lines.length; i++) {
@@ -55,10 +56,11 @@ async function seedStops(zip) {
     const stopId = cols[idIdx] || '';
     if (!stopId) continue;
     stopRows.push({
-      stop_id: stopId,
+      stop_id:   stopId,
+      stop_code: codeIdx >= 0 ? (cols[codeIdx] || '') : '',
       stop_name: cols[nameIdx] || '',
-      stop_lat: parseFloat(cols[latIdx]) || null,
-      stop_lon: parseFloat(cols[lonIdx]) || null,
+      stop_lat:  parseFloat(cols[latIdx]) || null,
+      stop_lon:  parseFloat(cols[lonIdx]) || null,
     });
   }
 
