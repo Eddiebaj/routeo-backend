@@ -181,22 +181,27 @@ async function handleRouteDetail(res, routeId, agency) {
     let firstBus = null, lastBus = null, avgFrequencyMin = null;
 
     if (trips.length >= 1) {
-      // Fetch first-stop departure for the first and last trip in the pattern.
-      // OTP sorts pattern trips by departure time so trips[0] = earliest, trips[-1] = latest.
-      // /trips/{id}/stoptimes returns times unconditionally (no calendar filtering).
-      const tripsToFetch = trips.length === 1
-        ? [trips[0]]
-        : [trips[0], trips[trips.length - 1]];
+      // OTP does not sort pattern.trips by departure time, so we must sample
+      // across the full array to find the actual first/last of the day.
+      // Cap at 20 evenly-spaced trips; frequency = span / (totalTripCount - 1).
+      const MAX_SAMPLE = 20;
+      const sampleTrips = trips.length <= MAX_SAMPLE
+        ? trips
+        : Array.from({ length: MAX_SAMPLE }, (_, i) =>
+            trips[Math.round(i * (trips.length - 1) / (MAX_SAMPLE - 1))]
+          );
 
       const departures = (await Promise.all(
-        tripsToFetch.map(t => fetchTripDeparture(t.id, 0))
+        sampleTrips.map(t => fetchTripDeparture(t.id, 0))
       )).filter(t => t != null && t >= 0).sort((a, b) => a - b);
 
       if (departures.length > 0) {
         firstBus = secsToHHMM(departures[0]);
         lastBus  = secsToHHMM(departures[departures.length - 1]);
-        if (departures.length === 2 && tripCount >= 2) {
-          avgFrequencyMin = Math.round((departures[1] - departures[0]) / 60 / (tripCount - 1));
+        if (departures.length >= 2 && tripCount >= 2) {
+          // Use true span / actualTripCount for accurate average headway
+          const span = departures[departures.length - 1] - departures[0];
+          avgFrequencyMin = Math.round(span / 60 / (tripCount - 1));
         }
       }
     }
@@ -275,12 +280,16 @@ async function handleStopFrequency(res, routeId, stopId) {
     const stopIndex = pattern.stops.findIndex(s => s.id.split(':').pop() === stopCode);
     if (stopIndex < 0) continue;
 
-    const tripsToFetch = trips.length === 1
-      ? [trips[0]]
-      : [trips[0], trips[trips.length - 1]];
+    // Sample up to 20 evenly-spaced trips to find actual first/last departure
+    const MAX_SAMPLE = 20;
+    const sampleTrips = trips.length <= MAX_SAMPLE
+      ? trips
+      : Array.from({ length: MAX_SAMPLE }, (_, i) =>
+          trips[Math.round(i * (trips.length - 1) / (MAX_SAMPLE - 1))]
+        );
 
     const departures = (await Promise.all(
-      tripsToFetch.map(t => fetchTripDeparture(t.id, stopIndex))
+      sampleTrips.map(t => fetchTripDeparture(t.id, stopIndex))
     )).filter(t => t != null && t >= 0).sort((a, b) => a - b);
 
     if (departures.length > 0) {
