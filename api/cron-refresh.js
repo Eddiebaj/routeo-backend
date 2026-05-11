@@ -30,19 +30,6 @@ async function batchInsert(table, rows) {
   }
 }
 
-async function insertBatchWithRetry(batch, attempt = 0) {
-  try {
-    const { error } = await supabase.from('stop_times').upsert(batch, { onConflict: 'trip_id,stop_sequence' });
-    if (error) throw error;
-  } catch (e) {
-    if (attempt < 3) {
-      console.log(`Batch failed, retrying (${attempt + 1}/3)...`);
-      await new Promise(r => setTimeout(r, 5000 * (attempt + 1)));
-      return insertBatchWithRetry(batch, attempt + 1);
-    }
-    throw e;
-  }
-}
 
 async function batchUpsert(table, rows, onConflict) {
   for (let i = 0; i < rows.length; i += BATCH_SIZE) {
@@ -119,69 +106,22 @@ module.exports = async (req, res) => {
       tripRows.push({ trip_id: tripId, route_id: routeId, headsign, service_id: serviceId, agency: 'OC' });
     }
 
-    // ── Parse stop_times.txt ─────────────────────────────────────
-    console.log('Parsing stop_times.txt...');
-    const stRaw     = zip.readAsText('stop_times.txt');
-    const stLines   = stRaw.trim().split('\n');
-    const stHeaders = stLines[0].replace(/\r/g, '').split(',');
-    const stTripIdx  = stHeaders.indexOf('trip_id');
-    const stStopIdx  = stHeaders.indexOf('stop_id');
-    const stTimeIdx  = stHeaders.indexOf('arrival_time');
-    const stSeqIdx   = stHeaders.indexOf('stop_sequence');
-
-    const stopTimeRows = [];
-    for (let i = 1; i < stLines.length; i++) {
-      const cols        = stLines[i].replace(/\r/g, '').split(',');
-      const tripId      = cols[stTripIdx] || '';
-      const stopId      = cols[stStopIdx] || '';
-      const time        = cols[stTimeIdx] || '';
-      const stopSeq     = parseInt(cols[stSeqIdx], 10) || 0;
-      if (!tripId || !stopId || !time) continue;
-
-      const trip = tripsMap[tripId] || {};
-      stopTimeRows.push({
-        stop_id:       stopId,
-        trip_id:       tripId,
-        arrival_time:  time,
-        stop_sequence: stopSeq,
-        route_id:      trip.routeId   || '',
-        headsign:      trip.headsign  || '',
-        service_id:    trip.serviceId || '',
-        agency:        'OC',
-      });
-    }
-
     // ── Seed stops table (upsert — safe to run anytime) ──────────
     const stopsCount = await seedStops(zip);
 
-    // If ?stopsOnly=1, skip the heavy trips/stop_times refresh
+    // If ?stopsOnly=1, skip the trips refresh
     if (req.query.stopsOnly === '1') {
       return res.json({ ok: true, stops: stopsCount, timestamp: new Date().toISOString() });
     }
 
-    // ── Refresh trips and stop_times ──────────────────────────────
-    // Trips: upsert with onConflict to avoid delete+insert gap
+    // ── Refresh trips ──────────────────────────────────────────────
     console.log(`Upserting ${tripRows.length} trips...`);
     await batchUpsert('trips', tripRows, 'trip_id');
-
-    // stop_times: resume from where we left off, then retry on network failure
-    const { count: existingCount } = await supabase
-      .from('stop_times')
-      .select('*', { count: 'exact', head: true });
-    const startFrom = existingCount ?? 0;
-    console.log(`Resuming stop_times from row ${startFrom} of ${stopTimeRows.length}...`);
-    const remainingStopTimes = stopTimeRows.slice(startFrom);
-
-    for (let i = 0; i < remainingStopTimes.length; i += BATCH_SIZE) {
-      const batch = remainingStopTimes.slice(i, i + BATCH_SIZE);
-      await insertBatchWithRetry(batch);
-    }
 
     console.log('Done.');
     res.json({
       ok: true,
       stops: stopsCount,
-      stop_times: stopTimeRows.length,
       trips: tripRows.length,
       timestamp: new Date().toISOString(),
     });

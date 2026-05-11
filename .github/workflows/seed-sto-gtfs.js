@@ -50,14 +50,6 @@ function parseCSVLine(line) {
   return fields;
 }
 
-async function batchInsert(table, rows) {
-  for (let i = 0; i < rows.length; i += BATCH) {
-    const { error } = await supabase.from(table).insert(rows.slice(i, i + BATCH));
-    if (error) throw new Error(`${table} insert failed at ${i}: ${error.message}`);
-    process.stdout.write(`\r  ${table}: ${Math.min(i+BATCH, rows.length)}/${rows.length}`);
-  }
-  console.log();
-}
 
 async function batchUpsertTrips(rows) {
   for (let i = 0; i < rows.length; i += BATCH) {
@@ -132,48 +124,18 @@ async function main() {
   }
   console.log(`  ${stopRows.length} stops parsed`);
 
-  // Parse stop_times.txt
-  console.log('Parsing stop_times.txt...');
-  const stLines = zip.readAsText('stop_times.txt').trim().split('\n');
-  const sh = stLines[0].replace(/\r/g, '').split(',');
-  const [sTrp, sStop, sTime] = ['trip_id', 'stop_id', 'arrival_time'].map(k => sh.indexOf(k));
-  const stRows = [];
-  for (let i = 1; i < stLines.length; i++) {
-    const c = parseCSVLine(stLines[i].replace(/\r/g, ''));
-    if (!c[sTrp] || !c[sStop] || !c[sTime]) continue;
-    const t = tripsMap[c[sTrp]] || {};
-    stRows.push({
-      stop_id: c[sStop],
-      trip_id: c[sTrp],
-      arrival_time: c[sTime],
-      route_id: t.routeId || '',
-      headsign: t.headsign || '',
-      service_id: t.serviceId || '',
-      agency: 'STO',
-    });
-  }
-  console.log(`  ${stRows.length} stop_times parsed`);
-
   // Upsert STO stops (preserves amenity columns for any existing)
   console.log('Upserting STO stops...');
   await batchUpsertStops(stopRows);
 
-  // Clear STO trips and stop_times only
+  // Clear STO trips
   console.log('Clearing existing STO trips...');
   const { error: delTrips } = await supabase.from('trips').delete().eq('agency', 'STO');
   if (delTrips) console.warn('  Warning deleting STO trips:', delTrips.message);
 
-  console.log('Clearing existing STO stop_times...');
-  const { error: delSt } = await supabase.from('stop_times').delete().eq('agency', 'STO');
-  if (delSt) console.warn('  Warning deleting STO stop_times:', delSt.message);
-
   // Upload STO trips
   console.log('Upserting STO trips...');
   await batchUpsertTrips(tripRows);
-
-  // Upload STO stop_times
-  console.log('Uploading STO stop_times...');
-  await batchInsert('stop_times', stRows);
 
   // Verify counts
   console.log('\nVerifying...');
@@ -187,10 +149,6 @@ async function main() {
   const { count: stoTrips } = await supabase.from('trips').select('*', { count: 'exact', head: true }).eq('agency', 'STO');
   const { count: ocTrips } = await supabase.from('trips').select('*', { count: 'exact', head: true }).eq('agency', 'OC');
   console.log(`Trip counts: OC=${ocTrips}, STO=${stoTrips}`);
-
-  const { count: stoSt } = await supabase.from('stop_times').select('*', { count: 'exact', head: true }).eq('agency', 'STO');
-  const { count: ocSt } = await supabase.from('stop_times').select('*', { count: 'exact', head: true }).eq('agency', 'OC');
-  console.log(`Stop_times counts: OC=${ocSt}, STO=${stoSt}`);
 
   // Record last update timestamp in gtfs_metadata
   console.log('Recording STO GTFS freshness timestamp...');

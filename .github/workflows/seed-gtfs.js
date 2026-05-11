@@ -27,14 +27,6 @@ function download(url) {
   });
 }
 
-async function batchInsert(table, rows) {
-  for (let i = 0; i < rows.length; i += BATCH) {
-    const { error } = await supabase.from(table).insert(rows.slice(i, i + BATCH));
-    if (error) throw new Error(`${table} insert failed at ${i}: ${error.message}`);
-    process.stdout.write(`\r  ${table}: ${Math.min(i+BATCH, rows.length)}/${rows.length}`);
-  }
-  console.log();
-}
 
 async function batchUpsertTrips(rows) {
   for (let i = 0; i < rows.length; i += BATCH) {
@@ -94,20 +86,6 @@ async function main() {
   }
   console.log(`  ${stopRows.length} stops parsed`);
 
-  // Parse stop_times.txt
-  console.log('Parsing stop_times.txt...');
-  const stLines = zip.readAsText('stop_times.txt').trim().split('\n');
-  const sh = stLines[0].replace(/\r/g,'').split(',');
-  const [sTrp,sStop,sTime] = ['trip_id','stop_id','arrival_time'].map(k=>sh.indexOf(k));
-  const stRows = [];
-  for (let i = 1; i < stLines.length; i++) {
-    const c = stLines[i].replace(/\r/g,'').split(',');
-    if (!c[sTrp]||!c[sStop]||!c[sTime]) continue;
-    const t = tripsMap[c[sTrp]]||{};
-    stRows.push({ stop_id:c[sStop], trip_id:c[sTrp], arrival_time:c[sTime], route_id:t.routeId||'', headsign:t.headsign||'', service_id:t.serviceId||'', agency:'OC' });
-  }
-  console.log(`  ${stRows.length} stop_times parsed`);
-
   // Upsert stops — preserve has_shelter, has_bench, has_bin (set by OSM import)
   console.log('Upserting stops (preserving amenity columns)...');
   await batchUpsertStops(stopRows);
@@ -117,12 +95,6 @@ async function main() {
   await supabase.from('trips').delete().eq('agency', 'OC');
   console.log('Upserting trips...');
   await batchUpsertTrips(tripRows);
-
-  // Clear and re-upload OC stop_times only (preserve STO data)
-  console.log('Clearing OC stop_times...');
-  await supabase.from('stop_times').delete().eq('agency', 'OC');
-  console.log('Uploading stop_times...');
-  await batchInsert('stop_times', stRows);
 
   // Record last update timestamp in gtfs_metadata
   console.log('Recording GTFS freshness timestamp...');
