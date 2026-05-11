@@ -235,10 +235,6 @@ async function fetchGtfsRtData() {
   if (!resp.ok) throw new Error(`GTFS-RT ${resp.status}`);
   const data = await resp.json();
   const entities = data?.Entity || [];
-  const sampleStops = entities.slice(0, 3).map(e =>
-    (e?.TripUpdate?.StopTimeUpdate || []).slice(0, 1).map(s => s?.StopId ?? s?.stop_id ?? 'n/a').join('')
-  );
-  console.log(`[gtfs-rt-tu] entities=${entities.length} sampleStopIds=${JSON.stringify(sampleStops)}`);
   // Only cache if response has actual trip updates — don't poison cache with empty/truncated feeds
   if (entities.length > 0) {
     rtCache = { data, ts: Date.now() };
