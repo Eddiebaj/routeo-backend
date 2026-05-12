@@ -23,6 +23,25 @@ const GTFS_RT_URL = 'https://nextrip-public-api.azure-api.net/octranspo/gtfs-rt-
 let rtCache = { data: null, ts: 0 };
 const RT_TTL = 30000; // 30 seconds
 
+// ── Per-stop stale cache — serves last good arrivals on GTFS-RT failure ──────
+// { [stopId]: { arrivals: [...], ts: number } }
+const arrivalsStaleCache = new Map();
+const STALE_TTL = 2 * 60 * 1000; // 2 minutes
+
+function saveStaleCache(stopId, arrivals) {
+  if (arrivals && arrivals.length > 0) {
+    arrivalsStaleCache.set(stopId, { arrivals, ts: Date.now() });
+  }
+}
+
+function getStaleCache(stopId) {
+  const entry = arrivalsStaleCache.get(stopId);
+  if (!entry) return null;
+  const ageMs = Date.now() - entry.ts;
+  if (ageMs > STALE_TTL) { arrivalsStaleCache.delete(stopId); return null; }
+  return { arrivals: entry.arrivals, staleAgeSeconds: Math.round(ageMs / 1000) };
+}
+
 // ── Ghost bus detection: track previous arrivals per stop ──────
 // { [stopId]: { arrivals: [{routeId, tripId, minsAway}], ts: timestamp } }
 const prevArrivalsCache = {};
@@ -410,6 +429,8 @@ async function fetchArrivalsForStop(stopId, arrivalLimit = 8) {
     if (Object.keys(reliability).length > 0) base.reliability = reliability;
     if (safetySignal) base.safetySignal = true;
     assignConfidence(base.arrivals || []);
+    // Persist good arrivals for stale fallback (only when not already stale)
+    if (!base.stale) saveStaleCache(stopId, base.arrivals);
     // Apply per-user departure cap (free: 2, premium: 20)
     if (Array.isArray(base.arrivals) && base.arrivals.length > arrivalLimit) {
       base.arrivals = base.arrivals.slice(0, arrivalLimit);
@@ -454,6 +475,11 @@ async function fetchArrivalsForStop(stopId, arrivalLimit = 8) {
       // STO GTFS-RT empty
     } catch (err) {
       console.warn(`[arrivals] STO GTFS-RT failed for stop ${stopId}:`, err.message);
+      const stale = getStaleCache(stopId);
+      if (stale) {
+        await Promise.all([ghostPromise, freshnessPromise, reliabilityPromise, safetyPromise]);
+        return buildResp({ stop: stopId, stopName, arrivals: stale.arrivals, source: 'stale', agency: 'STO', ghostReports, stale: true, staleAgeSeconds: stale.staleAgeSeconds });
+      }
     }
     await Promise.all([ghostPromise, freshnessPromise, reliabilityPromise, safetyPromise]);
     return buildResp({ stop: stopId, stopName, arrivals: [], source: 'sto-gtfs-rt-empty', agency: 'STO', ghostReports });
@@ -472,6 +498,11 @@ async function fetchArrivalsForStop(stopId, arrivalLimit = 8) {
       // OC GTFS-RT empty
     } catch (err) {
       console.warn(`[arrivals] GTFS-RT failed for stop ${stopId}:`, err.message);
+      const stale = getStaleCache(stopId);
+      if (stale) {
+        await Promise.all([ghostPromise, freshnessPromise, reliabilityPromise, safetyPromise]);
+        return buildResp({ stop: stopId, stopName, arrivals: stale.arrivals, source: 'stale', agency: 'OC', ghostReports, stale: true, staleAgeSeconds: stale.staleAgeSeconds });
+      }
     }
   } else {
     console.warn(`[arrivals] OC_TRANSPO_TU_KEY not set, skipping realtime for stop ${stopId}`);

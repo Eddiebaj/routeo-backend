@@ -43,6 +43,19 @@ module.exports = async function handler(req, res) {
     `&arriveBy=${arriveBy === 'true' ? 'true' : 'false'}` +
     (wheelchair === 'true' ? '&wheelchair=true' : '');
 
+  // OTP health check — 3s HEAD before committing to the full plan request
+  try {
+    const healthResp = await fetch(`${OTP_BASE}/otp/routers/default`, {
+      method: 'HEAD',
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!healthResp.ok) {
+      return res.status(503).json({ error: 'planner_unavailable', message: 'Trip planner temporarily unavailable' });
+    }
+  } catch {
+    return res.status(503).json({ error: 'planner_unavailable', message: 'Trip planner temporarily unavailable' });
+  }
+
   try {
     const otpResp = await fetch(otpUrl, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(15000) });
     if (!otpResp.ok) {
