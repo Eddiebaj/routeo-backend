@@ -80,6 +80,7 @@ module.exports = async function handler(req, res) {
         url: ev.url || '',
         imageUrl: ev.images?.[0]?.url || '',
         category: ev.classifications?.[0]?.segment?.name || '',
+        endDateTime: ev.dates?.end?.dateTime || '',
       };
     });
 

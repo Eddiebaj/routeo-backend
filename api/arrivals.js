@@ -9,6 +9,11 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
+// Service role client — only used for safety signal aggregation
+const supabaseAdmin = process.env.SUPABASE_SERVICE_KEY
+  ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY)
+  : null;
+
 const OC_KEY = process.env.OC_TRANSPO_API_KEY;   // VehiclePositions
 const OC_TU_KEY = process.env.OC_TRANSPO_TU_KEY; // TripUpdates (separate product)
 
@@ -322,6 +327,25 @@ async function fetchArrivalsForStop(stopId, arrivalLimit = 8) {
     } catch (e) { console.warn('reliability query failed:', e.message); }
   })();
 
+  // Fetch safety signal in parallel (service role, night hours only)
+  let safetySignal = false;
+  const safetyPromise = (async () => {
+    if (!supabaseAdmin) return;
+    const hour = new Date().getHours();
+    const isNight = hour >= 20 || hour < 6;
+    if (!isNight) return;
+    try {
+      const eightHoursAgo = new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString();
+      const { data, error } = await supabaseAdmin
+        .from('stop_safety_reports')
+        .select('id')
+        .eq('stop_id', stopId)
+        .gte('created_at', eightHoursAgo)
+        .limit(2);
+      if (!error && data && data.length >= 2) safetySignal = true;
+    } catch (e) { console.warn('safety signal query failed:', e.message); }
+  })();
+
   // Fetch ghost reports in parallel
   let ghostReports = {};
   const ghostPromise = (async () => {
@@ -374,6 +398,7 @@ async function fetchArrivalsForStop(stopId, arrivalLimit = 8) {
   const buildResp = (base) => {
     if (dataWarning) base.dataWarning = dataWarning;
     if (Object.keys(reliability).length > 0) base.reliability = reliability;
+    if (safetySignal) base.safetySignal = true;
     assignConfidence(base.arrivals || []);
     // Apply per-user departure cap (free: 2, premium: 20)
     if (Array.isArray(base.arrivals) && base.arrivals.length > arrivalLimit) {
@@ -412,7 +437,7 @@ async function fetchArrivalsForStop(stopId, arrivalLimit = 8) {
     try {
       const stoArrivals = await fetchSTORealtime(stopId);
       if (stoArrivals.length > 0) {
-        await Promise.all([ghostPromise, freshnessPromise, reliabilityPromise]);
+        await Promise.all([ghostPromise, freshnessPromise, reliabilityPromise, safetyPromise]);
         const arrivals = stoArrivals.map(a => ({ ...a, source: 'sto-gtfs-rt' }));
         return buildResp({ stop: stopId, stopName, arrivals, source: 'sto-gtfs-rt', agency: 'STO', ghostReports });
       }
@@ -420,7 +445,7 @@ async function fetchArrivalsForStop(stopId, arrivalLimit = 8) {
     } catch (err) {
       console.warn(`[arrivals] STO GTFS-RT failed for stop ${stopId}:`, err.message);
     }
-    await Promise.all([ghostPromise, freshnessPromise, reliabilityPromise]);
+    await Promise.all([ghostPromise, freshnessPromise, reliabilityPromise, safetyPromise]);
     return buildResp({ stop: stopId, stopName, arrivals: [], source: 'sto-gtfs-rt-empty', agency: 'STO', ghostReports });
   }
 
@@ -430,7 +455,7 @@ async function fetchArrivalsForStop(stopId, arrivalLimit = 8) {
     try {
       const rtArrivals = await fetchRealtime(stopId);
       if (rtArrivals.length > 0) {
-        await Promise.all([ghostPromise, freshnessPromise, reliabilityPromise]);
+        await Promise.all([ghostPromise, freshnessPromise, reliabilityPromise, safetyPromise]);
         const arrivals = rtArrivals.map(a => ({ ...a, source: 'gtfs-rt' }));
         return buildResp({ stop: stopId, stopName, arrivals, source: 'gtfs-rt', ghostReports });
       }
@@ -442,7 +467,7 @@ async function fetchArrivalsForStop(stopId, arrivalLimit = 8) {
     console.warn(`[arrivals] OC_TRANSPO_TU_KEY not set, skipping realtime for stop ${stopId}`);
   }
 
-  await Promise.all([ghostPromise, freshnessPromise, reliabilityPromise]);
+  await Promise.all([ghostPromise, freshnessPromise, reliabilityPromise, safetyPromise]);
   return buildResp({ stop: stopId, stopName, arrivals: [], source: 'gtfs-rt-empty', ghostReports });
 }
 
