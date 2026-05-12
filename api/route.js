@@ -401,13 +401,15 @@ async function handleRouteShape(res, routeId, agency) {
 
   console.log(`[shape] ${bareId}: best pattern ${best.id} has ${bestCount} stops`);
 
+  const agency = best.id.startsWith('1:') ? 'STO' : 'OC';
+
   // Try encoded polyline geometry first
   const encoded = best?.patternGeometry?.points;
   if (encoded) {
     const shape = decodePolyline(encoded);
     if (shape.length > 0) {
       console.log(`[shape] ${bareId}: using encoded polyline (${shape.length} points)`);
-      return res.json({ routeId: bareId, shape });
+      return res.json({ routeId: bareId, agency, shape });
     }
   }
 
@@ -420,7 +422,7 @@ async function handleRouteShape(res, routeId, agency) {
       console.log(`[shape] ${bareId}: snapping ${stopCoords.length} stops via OSRM`);
       const snapped = await snapToRoads(stopCoords);
       console.log(`[shape] ${bareId}: returning ${snapped.length} points (${snapped === stopCoords ? 'raw stops' : 'OSRM snapped'})`);
-      return res.json({ routeId: bareId, shape: snapped });
+      return res.json({ routeId: bareId, agency, shape: snapped });
     }
   }
 
