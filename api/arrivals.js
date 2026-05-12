@@ -144,9 +144,9 @@ async function fetchRealtime(stopId) {
       const t = parseInt(arr.Time || 0);
       if (!t) continue;
       const secsAway = t - now;
-      if (secsAway < -60 || secsAway > 5400) continue;
+      if (secsAway < -600 || secsAway > 5400) continue;
       const trip = tu.Trip || {};
-      results.push({
+      const entry = {
         stopId,
         routeId: trip.RouteId || '?',
         tripId: String(trip.TripId || ''),
@@ -156,7 +156,12 @@ async function fetchRealtime(stopId) {
         departureTime: parseInt((stu.Departure || {}).Time || 0) || t,
         scheduleRelationship: stu.ScheduleRelationship || 'SCHEDULED',
         agency: 'OC',
-      });
+      };
+      if (secsAway < 0) {
+        entry.minutesLate = Math.abs(Math.round(secsAway / 60));
+        if (entry.minutesLate >= 4) entry.possiblyLate = true;
+      }
+      results.push(entry);
     }
   }
 
@@ -219,13 +224,18 @@ async function fetchSTORealtime(stopId) {
       const t = arr.time ? Number(arr.time) : 0;
       if (!t) continue;
       const secsAway = t - now;
-      if (secsAway < -60 || secsAway > 5400) continue;
+      if (secsAway < -600 || secsAway > 5400) continue;
       const trip = tu.trip || {};
       const tripId = String(trip.tripId || '');
       const routeId = trip.routeId || '?';
       // Use vehicle label directly if available, Supabase lookup fills the rest
       const headsign = tu.vehicle?.label ? cleanHeadsign(tu.vehicle.label, routeId) : '';
-      results.push({ stopId, routeId, tripId, headsign, minsAway: Math.max(0, Math.round(secsAway / 60)), arrivalTime: t, departureTime: t, scheduleRelationship: 'SCHEDULED', agency: 'STO' });
+      const stoEntry = { stopId, routeId, tripId, headsign, minsAway: Math.max(0, Math.round(secsAway / 60)), arrivalTime: t, departureTime: t, scheduleRelationship: 'SCHEDULED', agency: 'STO' };
+      if (secsAway < 0) {
+        stoEntry.minutesLate = Math.abs(Math.round(secsAway / 60));
+        if (stoEntry.minutesLate >= 4) stoEntry.possiblyLate = true;
+      }
+      results.push(stoEntry);
     }
   }
 
