@@ -10,7 +10,7 @@
  */
 
 const { checkRateLimit } = require('./_rateLimit');
-const OTP_BASE = 'https://routeo-otp-production.up.railway.app';
+const OTP_BASE = process.env.OTP_URL || 'https://opentripplanner-production.up.railway.app';
 
 /** Decode Google encoded polyline string into [{latitude, longitude}] */
 function decodePolyline(encoded) {
