@@ -1,45 +1,37 @@
 const { checkRateLimit } = require('./_rateLimit');
 const { buildStoUrl } = require('./_sto');
 const GtfsRealtimeBindings = require('gtfs-realtime-bindings');
+const { createClient } = require('@supabase/supabase-js');
+
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 // ── OC Transpo config ────────────────────────────────────────
-const OC_API_KEY = process.env.OC_TRANSPO_API_KEY;
+const OC_API_KEY = process.env.OC_TRANSPO_TU_KEY; // TripUpdates subscription
 const TRIP_UPDATES_URL = 'https://nextrip-public-api.azure-api.net/octranspo/gtfs-rt-tp/beta/v1/TripUpdates?format=json';
-const STOPS_URL = 'https://raw.githubusercontent.com/Eddiebaj/routeo-backend/main/api/stops.txt';
 
 let stopsCache = null;
 let stopsCacheTs = 0;
-const STOPS_TTL = 24 * 60 * 60 * 1000; // 24 hours
+const STOPS_TTL = 24 * 60 * 60 * 1000;
 
 async function loadStops() {
   if (stopsCache && Date.now() - stopsCacheTs < STOPS_TTL) return stopsCache;
-  try {
-    const resp = await fetch(STOPS_URL, { signal: AbortSignal.timeout(10000) });
-    const txt = await resp.text();
-    const lines = txt.split('\n');
-    const map = {};
-    for (let i = 1; i < lines.length; i++) {
-      const line = lines[i].trim().replace(/\r/g, '');
-      if (!line) continue;
-      const cols = line.split(',');
-      const stopId = cols[0] ? cols[0].trim() : '';
-      const lat = parseFloat(cols[5]);
-      const lng = parseFloat(cols[6]);
-      if (stopId && !isNaN(lat) && !isNaN(lng)) {
-        map[stopId] = { lat, lng };
-      }
-    }
-    stopsCache = map;
-    stopsCacheTs = Date.now();
-    return map;
-  } catch (err) {
-    // If fetch fails but stale cache exists, use it
-    if (stopsCache) {
-      console.warn('Stops fetch failed, using stale cache:', err.message);
-      return stopsCache;
-    }
-    throw err;
+  const { data, error } = await supabase
+    .from('stops')
+    .select('stop_id, stop_lat, stop_lon')
+    .eq('agency', 'OC');
+  if (error) {
+    if (stopsCache) { console.warn('Stops load failed, using stale cache:', error.message); return stopsCache; }
+    throw new Error(`Stops load failed: ${error.message}`);
   }
+  const map = {};
+  for (const row of (data || [])) {
+    if (row.stop_id && row.stop_lat != null && row.stop_lon != null) {
+      map[String(row.stop_id)] = { lat: row.stop_lat, lng: row.stop_lon };
+    }
+  }
+  stopsCache = map;
+  stopsCacheTs = Date.now();
+  return map;
 }
 
 function getTime(stu) {

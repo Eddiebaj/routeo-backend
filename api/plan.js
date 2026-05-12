@@ -46,8 +46,6 @@ module.exports = async function handler(req, res) {
   try {
     const otpResp = await fetch(otpUrl, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(15000) });
     if (!otpResp.ok) {
-      const text = await otpResp.text();
-      console.error('OTP error response:', text);
       return res.status(502).json({ error: 'OTP returned an error' });
     }
     const data = await otpResp.json();
@@ -160,6 +158,7 @@ module.exports = async function handler(req, res) {
 }
 
 async function enrichWalkSteps(from, to, otpSteps) {
+  if (!GOOGLE_KEY) return otpSteps;
   const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${from.lat},${from.lng}&destination=${to.lat},${to.lng}&mode=walking&key=${GOOGLE_KEY}`;
   const resp = await fetch(url, { signal: AbortSignal.timeout(5000) });
   if (!resp.ok) return otpSteps;

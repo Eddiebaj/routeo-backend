@@ -12,10 +12,7 @@ const supabase = createClient(
 const OC_KEY = process.env.OC_TRANSPO_API_KEY;   // VehiclePositions
 const OC_TU_KEY = process.env.OC_TRANSPO_TU_KEY; // TripUpdates (separate product)
 
-const AdmZip = require('adm-zip');
-
 const GTFS_RT_URL = 'https://nextrip-public-api.azure-api.net/octranspo/gtfs-rt-tp/beta/v1/TripUpdates?format=json';
-const STO_GTFS_ZIP_URL = 'https://www.contenu.sto.ca/GTFS/GTFS.zip';
 
 // Module-level cache for OC Transpo GTFS-RT feed (shared across concurrent requests)
 let rtCache = { data: null, ts: 0 };
@@ -45,153 +42,10 @@ function pruneArrivalsCache() {
   }
 }
 
-// ── STO headsign lookup (cached in module scope, refreshed daily) ──
-let stoTripsMap = {};      // { [trip_id]: headsign }
-let stoTripsLoadedAt = 0;  // timestamp of last load
-let stoTripsLoading = false; // lock: prevents concurrent zip downloads
-const STO_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
-function parseCSVLine(line) {
-  const fields = [];
-  let current = '';
-  let inQuotes = false;
-  for (const ch of line) {
-    if (ch === '"') { inQuotes = !inQuotes; }
-    else if (ch === ',' && !inQuotes) { fields.push(current); current = ''; }
-    else { current += ch; }
-  }
-  fields.push(current);
-  return fields;
-}
-
-async function getSTOTripsMap() {
-  if (Object.keys(stoTripsMap).length > 0 && Date.now() - stoTripsLoadedAt < STO_CACHE_TTL) {
-    return stoTripsMap;
-  }
-  // Lock: if another request is already downloading, return stale cache immediately
-  if (stoTripsLoading) return stoTripsMap;
-  stoTripsLoading = true;
-  try {
-    const resp = await fetch(STO_GTFS_ZIP_URL, { signal: AbortSignal.timeout(15000) });
-    if (!resp.ok) throw new Error(`STO GTFS zip HTTP ${resp.status}`);
-    const buf = Buffer.from(await resp.arrayBuffer());
-    const zip = new AdmZip(buf);
-    const tripsEntry = zip.getEntry('trips.txt');
-    if (!tripsEntry) throw new Error('trips.txt not found in STO GTFS zip');
-    const lines = tripsEntry.getData().toString('utf8').trim().split('\n');
-    const header = parseCSVLine(lines[0].replace(/\r/g, ''));
-    const idxTripId = header.indexOf('trip_id');
-    const idxHeadsign = header.indexOf('trip_headsign');
-    if (idxTripId < 0) throw new Error('trip_id column not found');
-    const map = {};
-    for (let i = 1; i < lines.length; i++) {
-      const cols = parseCSVLine(lines[i].replace(/\r/g, ''));
-      if (!cols[idxTripId]) continue;
-      map[cols[idxTripId]] = idxHeadsign >= 0 ? (cols[idxHeadsign] || '') : '';
-    }
-    stoTripsMap = map;
-    stoTripsLoadedAt = Date.now();
-    // STO trips.txt loaded silently
-  } catch (err) {
-    console.error('STO trips.txt load failed:', err.message);
-    // Keep stale cache if available
-  } finally {
-    stoTripsLoading = false;
-  }
-  return stoTripsMap;
-}
-
-// ── STO stop detection ─────────────────────────────────────────
-// STO stops use alphanumeric IDs that start with letters (e.g. "AAAA", "STOP1")
-// OC Transpo stops are purely numeric (e.g. "3000", "9942") or alphanumeric LRT
-// platform codes (e.g. "NA998", "EE995") which are in MULTI_PLATFORM_STOPS
-function isStoStop(stopId) {
-  return /^[A-Za-z]/.test(String(stopId));
-}
-
-function isSTOStop(stopId) {
-  const id = String(stopId);
-  // If it's in our multi-platform map, it's OC Transpo
-  if (MULTI_PLATFORM_STOPS[id]) return false;
-  return isStoStop(id);
-}
-
-// Multi-platform transit hub stops (e.g. Rideau Centre has platforms 9942-9948)
-const MULTI_PLATFORM_STOPS = {
-  '9942': ['9942','9943','9944','9945','9946','9947','9948','NA998','NA999'],
-  '9943': ['9942','9943','9944','9945','9946','9947','9948','NA998','NA999'],
-  '9944': ['9942','9943','9944','9945','9946','9947','9948','NA998','NA999'],
-  '9945': ['9942','9943','9944','9945','9946','9947','9948','NA998','NA999'],
-  '9946': ['9942','9943','9944','9945','9946','9947','9948','NA998','NA999'],
-  '9947': ['9942','9943','9944','9945','9946','9947','9948','NA998','NA999'],
-  '9948': ['9942','9943','9944','9945','9946','9947','9948','NA998','NA999'],
-  'NA998': ['9942','9943','9944','9945','9946','9947','9948','NA998','NA999'],
-  'NA999': ['9942','9943','9944','9945','9946','9947','9948','NA998','NA999'],
-  '10027': ['10027','10028','NA990','NA995','NA996','NA997'],
-  '10028': ['10027','10028','NA990','NA995','NA996','NA997'],
-  'NA990': ['10027','10028','NA990','NA995','NA996','NA997'],
-  'NA995': ['10027','10028','NA990','NA995','NA996','NA997'],
-  'NA996': ['10027','10028','NA990','NA995','NA996','NA997'],
-  'NA997': ['10027','10028','NA990','NA995','NA996','NA997'],
-  '9870': ['9870','9871','9957','9958','CJ990','CJ995'],
-  '9871': ['9870','9871','9957','9958','CJ990','CJ995'],
-  '9957': ['9870','9871','9957','9958','CJ990','CJ995'],
-  '9958': ['9870','9871','9957','9958','CJ990','CJ995'],
-  'CJ990': ['9870','9871','9957','9958','CJ990','CJ995'],
-  'CJ995': ['9870','9871','9957','9958','CJ990','CJ995'],
-  '9928': ['9928','9929','CA990','CA995'],
-  '9929': ['9928','9929','CA990','CA995'],
-  'CA990': ['9928','9929','CA990','CA995'],
-  'CA995': ['9928','9929','CA990','CA995'],
-  '9822': ['9822','9868','CB990','CB995'],
-  '9868': ['9822','9868','CB990','CB995'],
-  'CB990': ['9822','9868','CB990','CB995'],
-  'CB995': ['9822','9868','CB990','CB995'],
-  '9833': ['9833','9869','10004','10734','CD990','CD995'],
-  '9869': ['9833','9869','10004','10734','CD990','CD995'],
-  '10004': ['9833','9869','10004','10734','CD990','CD995'],
-  '10734': ['9833','9869','10004','10734','CD990','CD995'],
-  'CD990': ['9833','9869','10004','10734','CD990','CD995'],
-  'CD995': ['9833','9869','10004','10734','CD990','CD995'],
-  '10735': ['10735','10736','CD998','CD999'],
-  '10736': ['10735','10736','CD998','CD999'],
-  'CD998': ['10735','10736','CD998','CD999'],
-  'CD999': ['10735','10736','CD998','CD999'],
-  '10042': ['10042','10043','CE990','CE995'],
-  '10043': ['10042','10043','CE990','CE995'],
-  'CE990': ['10042','10043','CE990','CE995'],
-  'CE995': ['10042','10043','CE990','CE995'],
-  '9951': ['9951','9952','9953','9954','9955','AF990','AF995'],
-  '9952': ['9951','9952','9953','9954','9955','AF990','AF995'],
-  '9953': ['9951','9952','9953','9954','9955','AF990','AF995'],
-  '9954': ['9951','9952','9953','9954','9955','AF990','AF995'],
-  '9955': ['9951','9952','9953','9954','9955','AF990','AF995'],
-  'AF990': ['9951','9952','9953','9954','9955','AF990','AF995'],
-  'AF995': ['9951','9952','9953','9954','9955','AF990','AF995'],
-  '10728': ['10728','10729','AE990','AE995'],
-  '10729': ['10728','10729','AE990','AE995'],
-  'AE990': ['10728','10729','AE990','AE995'],
-  'AE995': ['10728','10729','AE990','AE995'],
-  '10014': ['10014','10015','10016','10017','EB990','EB995'],
-  '10015': ['10014','10015','10016','10017','EB990','EB995'],
-  '10016': ['10014','10015','10016','10017','EB990','EB995'],
-  '10017': ['10014','10015','10016','10017','EB990','EB995'],
-  'EB990': ['10014','10015','10016','10017','EB990','EB995'],
-  'EB995': ['10014','10015','10016','10017','EB990','EB995'],
-  '10743': ['10743','10744','EC990','EC995'],
-  '10744': ['10743','10744','EC990','EC995'],
-  'EC990': ['10743','10744','EC990','EC995'],
-  'EC995': ['10743','10744','EC990','EC995'],
-  '9872': ['9872','9873','9922','9961','9963','10144','10149','EE990','EE995'],
-  '9873': ['9872','9873','9922','9961','9963','10144','10149','EE990','EE995'],
-  '9922': ['9872','9873','9922','9961','9963','10144','10149','EE990','EE995'],
-  '9961': ['9872','9873','9922','9961','9963','10144','10149','EE990','EE995'],
-  '9963': ['9872','9873','9922','9961','9963','10144','10149','EE990','EE995'],
-  '10144': ['9872','9873','9922','9961','9963','10144','10149','EE990','EE995'],
-  '10149': ['9872','9873','9922','9961','9963','10144','10149','EE990','EE995'],
-  'EE990': ['9872','9873','9922','9961','9963','10144','10149','EE990','EE995'],
-  'EE995': ['9872','9873','9922','9961','9963','10144','10149','EE990','EE995'],
-};
+// MULTI_PLATFORM_STOPS cleared — OC Transpo renumbered all internal stop IDs.
+// Stop routing (OC vs STO) is now handled by resolveStopAgency() via Supabase.
+const MULTI_PLATFORM_STOPS = {};
 
 // ── OC stop_code → stop_id[] resolver (Supabase-backed, 24h cache) ──
 // OC Transpo renumbered internal stop IDs; users pass stop_codes (e.g. "3000")
@@ -214,6 +68,29 @@ async function resolveOCStopIds(stopCode) {
     return result;
   } catch {
     return [stopCode];
+  }
+}
+
+// ── Stop agency resolver (Supabase-backed, 24h cache) ──────────
+// Determines whether a stop is OC or STO via the agency column.
+// Falls back to letter-prefix heuristic if Supabase is unavailable.
+const stopAgencyCache = {}; // { [stopCode]: { agency: string, ts: number } }
+
+async function resolveStopAgency(stopCode) {
+  const hit = stopAgencyCache[stopCode];
+  if (hit && Date.now() - hit.ts < OC_STOP_CODE_TTL) return hit.agency;
+  try {
+    const { data } = await supabase
+      .from('stops')
+      .select('agency')
+      .or(`stop_code.eq.${stopCode},stop_id.eq.${stopCode}`)
+      .limit(1)
+      .maybeSingle();
+    const agency = data?.agency ?? (/^[A-Za-z]/.test(String(stopCode)) ? 'STO' : 'OC');
+    stopAgencyCache[stopCode] = { agency, ts: Date.now() };
+    return agency;
+  } catch {
+    return /^[A-Za-z]/.test(String(stopCode)) ? 'STO' : 'OC';
   }
 }
 
@@ -315,25 +192,16 @@ async function fetchRealtime(stopId) {
 
 // ── Fetch STO GTFS-RT live predictions ────────────────────────
 async function fetchSTORealtime(stopId) {
-  // Kick off trips map load in parallel with GTFS-RT fetch
-  const tripsMapP = getSTOTripsMap();
-
   const stoUrl = buildStoUrl('trip');
   if (!stoUrl) {
     console.warn('STO keys not configured, skipping realtime');
     return [];
   }
-  const resp = await fetch(stoUrl, {
-    signal: AbortSignal.timeout(8000),
-  });
+  const resp = await fetch(stoUrl, { signal: AbortSignal.timeout(8000) });
   if (!resp.ok) throw new Error(`STO GTFS-RT ${resp.status}`);
 
   const buffer = await resp.arrayBuffer();
-  const feed = GtfsRealtimeBindings.transit_realtime.FeedMessage.decode(
-    new Uint8Array(buffer)
-  );
-
-  const tripsMap = await tripsMapP;
+  const feed = GtfsRealtimeBindings.transit_realtime.FeedMessage.decode(new Uint8Array(buffer));
   const now = Math.floor(Date.now() / 1000);
   const results = [];
 
@@ -350,32 +218,9 @@ async function fetchSTORealtime(stopId) {
       const trip = tu.trip || {};
       const tripId = String(trip.tripId || '');
       const routeId = trip.routeId || '?';
-
-      // Resolve headsign: GTFS-RT vehicle descriptor → trips.txt lookup → fallback
-      let headsign = '';
-      if (tu.vehicle && tu.vehicle.label) {
-        headsign = tu.vehicle.label;
-      }
-      if (!headsign && tripId && tripsMap[tripId]) {
-        headsign = tripsMap[tripId];
-      }
-      if (!headsign) {
-        headsign = `Route ${routeId}`;
-      } else {
-        headsign = cleanHeadsign(headsign, routeId);
-      }
-
-      results.push({
-        stopId,
-        routeId,
-        tripId,
-        headsign,
-        minsAway: Math.max(0, Math.round(secsAway / 60)),
-        arrivalTime: t,
-        departureTime: t,
-        scheduleRelationship: 'SCHEDULED',
-        agency: 'STO',
-      });
+      // Use vehicle label directly if available, Supabase lookup fills the rest
+      const headsign = tu.vehicle?.label ? cleanHeadsign(tu.vehicle.label, routeId) : '';
+      results.push({ stopId, routeId, tripId, headsign, minsAway: Math.max(0, Math.round(secsAway / 60)), arrivalTime: t, departureTime: t, scheduleRelationship: 'SCHEDULED', agency: 'STO' });
     }
   }
 
@@ -390,12 +235,31 @@ async function fetchSTORealtime(stopId) {
     if (unique.length >= 8) break;
   }
 
+  // Fill missing headsigns from Supabase trips table (replaces zip download)
+  const needsHeadsign = unique.filter(r => !r.headsign);
+  if (needsHeadsign.length > 0) {
+    const tripIds = [...new Set(needsHeadsign.map(r => r.tripId).filter(Boolean))];
+    if (tripIds.length > 0) {
+      try {
+        const { data: tripData } = await supabase.from('trips').select('trip_id, headsign').in('trip_id', tripIds);
+        const lookup = {};
+        if (tripData) for (const t of tripData) lookup[t.trip_id] = t.headsign;
+        for (const r of needsHeadsign) {
+          r.headsign = lookup[r.tripId] ? cleanHeadsign(lookup[r.tripId], r.routeId) : `Route ${r.routeId}`;
+        }
+      } catch {
+        for (const r of needsHeadsign) r.headsign = `Route ${r.routeId}`;
+      }
+    }
+  }
+  for (const r of unique) { if (!r.headsign) r.headsign = `Route ${r.routeId}`; }
+
   return unique;
 }
 
 // ── Core per-stop logic (returns response object) ─────────
 async function fetchArrivalsForStop(stopId, arrivalLimit = 8) {
-  const isSTO = isSTOStop(stopId);
+  const isSTO = (await resolveStopAgency(stopId)) === 'STO';
 
   // Check GTFS data freshness (non-blocking)
   let dataWarning = null;
@@ -622,6 +486,34 @@ module.exports = async (req, res) => {
     const ids = stopsParam.split(',').map(s => (s.trim().replace(/^0+/, '') || s.trim())).filter(Boolean);
     if (ids.length === 0) return res.status(400).json({ error: 'stops param empty' });
     if (ids.length > 10) return res.status(400).json({ error: 'Too many stops', max: 10, received: ids.length });
+
+    // Pre-resolve all stop metadata in two queries to avoid N+1 inside fetchArrivalsForStop
+    await Promise.all([
+      (async () => {
+        try {
+          const { data } = await supabase.from('stops').select('stop_id, stop_code').eq('agency', 'OC').in('stop_code', ids);
+          const byCode = {};
+          for (const row of (data || [])) {
+            if (!byCode[row.stop_code]) byCode[row.stop_code] = [];
+            byCode[row.stop_code].push(String(row.stop_id));
+          }
+          for (const id of ids) {
+            if (byCode[id]) ocStopCodeCache[id] = { ids: byCode[id], ts: Date.now() };
+          }
+        } catch {}
+      })(),
+      (async () => {
+        try {
+          const orFilter = ids.map(id => `stop_code.eq.${id},stop_id.eq.${id}`).join(',');
+          const { data } = await supabase.from('stops').select('stop_id, stop_code, agency').or(orFilter);
+          for (const row of (data || [])) {
+            const key = row.stop_code || row.stop_id;
+            if (key) stopAgencyCache[key] = { agency: row.agency, ts: Date.now() };
+          }
+        } catch {}
+      })(),
+    ]);
+
     const results = await Promise.all(ids.map(id => fetchArrivalsForStop(id, arrivalLimit)));
     res.json({ results });
     logRequest(ids.join(','), 'batch', Date.now() - startTime);

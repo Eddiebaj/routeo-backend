@@ -61,6 +61,7 @@ async function seedStops(zip) {
       stop_name: cols[nameIdx] || '',
       stop_lat:  parseFloat(cols[latIdx]) || null,
       stop_lon:  parseFloat(cols[lonIdx]) || null,
+      agency:    'OC',
     });
   }
 
