@@ -341,60 +341,6 @@ async function handleParking(req, res) {
   return res.status(200).json(results);
 }
 
-// ── Gas Prices ──────────────────────────────────────────────────
-
-let gasCachedResult = null;
-
-async function fetchNRCanPrice() {
-  const url = 'https://www2.nrcan.gc.ca/eneene/sources/pripri/prices_bycity_e.cfm?productID=1&locationID=66&frequency=D';
-  const resp = await fetch(url, {
-    headers: { 'User-Agent': 'RouteO/1.0 (Ottawa transit app)' },
-    signal: AbortSignal.timeout(8000),
-  });
-  if (!resp.ok) throw new Error(`NRCan HTTP ${resp.status}`);
-  const html = await resp.text();
-
-  const priceMatch = html.match(/<td[^>]*>\s*(\d{2,3}\.\d)\s*<\/td>/);
-  if (priceMatch) {
-    const raw = parseFloat(priceMatch[1]);
-    if (raw > 50 && raw < 300) return raw.toFixed(1);
-  }
-
-  const altMatch = html.match(/(\d{2,3}\.\d{1,2})\s*\u00a2/);
-  if (altMatch) return parseFloat(altMatch[1]).toFixed(1);
-
-  const ottawaIdx = html.toLowerCase().indexOf('ottawa');
-  if (ottawaIdx > -1) {
-    const nearby = html.slice(ottawaIdx, ottawaIdx + 500);
-    const numMatch = nearby.match(/\b(1[2-9]\d\.\d)\b/);
-    if (numMatch) return parseFloat(numMatch[1]).toFixed(1);
-  }
-
-  throw new Error('Could not parse price from NRCan response');
-}
-
-async function handleGas(req, res) {
-  res.setHeader('Cache-Control', 's-maxage=1800, stale-while-revalidate=3600');
-  try {
-    const price = await fetchNRCanPrice();
-    const result = {
-      price,
-      city: 'Ottawa',
-      currency: 'CAD',
-      unit: 'cents/L',
-      source: 'NRCan',
-      updated: new Date().toISOString().split('T')[0],
-      stations: [],
-    };
-    gasCachedResult = { price, updated: new Date().toISOString() };
-    return res.status(200).json(result);
-  } catch (err) {
-    console.error('Gas price fetch failed:', err);
-    if (gasCachedResult) return res.status(200).json({ price: gasCachedResult.price, city: 'Ottawa', currency: 'CAD', unit: 'cents/L', source: 'NRCan', updated: gasCachedResult.updated, stations: [], stale: true });
-    return res.status(500).json({ error: 'Could not fetch gas prices' });
-  }
-}
-
 // ── Bike Share (VeloGo) ─────────────────────────────────────────
 
 let bikeShareCached = null;
@@ -519,7 +465,7 @@ module.exports = async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   const { type } = req.query;
-  if (!type) return res.status(400).json({ error: 'Missing type param (foursquare|ottawa|construction|parking|gas|bike_share|venue_detail)' });
+  if (!type) return res.status(400).json({ error: 'Missing type param (foursquare|ottawa|construction|parking|bike_share|venue_detail)' });
 
   try {
     switch (type) {
@@ -527,7 +473,6 @@ module.exports = async function handler(req, res) {
       case 'ottawa': return await handleOttawa(req, res);
       case 'construction': return await handleConstruction(req, res);
       case 'parking': return await handleParking(req, res);
-      case 'gas': return await handleGas(req, res);
       case 'bike_share': return await handleBikeShare(req, res);
       case 'venue_detail': return await handleVenueDetail(req, res);
       default: return res.status(400).json({ error: `Unknown type: ${type}` });
