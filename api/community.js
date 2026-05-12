@@ -117,6 +117,11 @@ const COOLDOWN_CLEANUP_INTERVAL = 5 * 60 * 1000; // 5 minutes
 const COOLDOWN_MAX_AGE = 24 * 60 * 60 * 1000; // 24 hours
 let lastCooldownCleanup = Date.now();
 
+// ── Ticketmaster cache ───────────────────────────────────────────
+let tmCache = {};
+let tmCacheTs = {};
+const TM_CACHE_TTL = 15 * 60 * 1000;
+
 function checkDeviceCooldown(deviceId, action, cooldownMs = 5000) {
   const now = Date.now();
   // Periodic cleanup: remove entries older than 24 hours, at most once per 5 min
@@ -1049,6 +1054,69 @@ async function handler(req, res) {
         }
         // All other event types: acknowledge and ignore
         return res.status(200).json({ received: true });
+      }
+
+      // ── Ticketmaster events proxy ────────────────────────────────
+      case 'ticketmaster': {
+        const tmApiKey = process.env.TICKETMASTER_API_KEY;
+        if (!tmApiKey) return res.status(500).json({ error: 'TICKETMASTER_API_KEY not configured' });
+
+        const {
+          city = 'Ottawa',
+          radius = '50',
+          size = '20',
+          keyword,
+          startDateTime,
+          endDateTime,
+        } = req.query;
+
+        const cacheKey = JSON.stringify({ city, radius, size, keyword, startDateTime, endDateTime });
+        if (tmCache[cacheKey] && Date.now() - (tmCacheTs[cacheKey] || 0) < TM_CACHE_TTL) {
+          return res.json(tmCache[cacheKey]);
+        }
+
+        const params = new URLSearchParams({
+          apikey: tmApiKey, city, radius, size, unit: 'km', countryCode: 'CA', sort: 'date,asc',
+        });
+        if (keyword) params.set('keyword', keyword);
+        if (startDateTime) params.set('startDateTime', startDateTime);
+        if (endDateTime) params.set('endDateTime', endDateTime);
+
+        const tmResp = await fetch(
+          `https://app.ticketmaster.com/discovery/v2/events.json?${params}`,
+          { headers: { 'User-Agent': 'RouteO/1.0' }, signal: AbortSignal.timeout(10000) }
+        );
+        if (!tmResp.ok) return res.status(tmResp.status).json({ error: `Ticketmaster API HTTP ${tmResp.status}` });
+
+        const tmData = await tmResp.json();
+        const events = (tmData._embedded?.events || []).map(ev => {
+          const venue = ev._embedded?.venues?.[0] || {};
+          const loc = venue.location || {};
+          return {
+            id: ev.id,
+            name: ev.name,
+            date: ev.dates?.start?.localDate || '',
+            time: ev.dates?.start?.localTime || '',
+            venue: venue.name || '',
+            lat: loc.latitude ? parseFloat(loc.latitude) : null,
+            lng: loc.longitude ? parseFloat(loc.longitude) : null,
+            url: ev.url || '',
+            imageUrl: ev.images?.[0]?.url || '',
+            category: ev.classifications?.[0]?.segment?.name || '',
+            endDateTime: ev.dates?.end?.dateTime || '',
+          };
+        });
+
+        const result = { events, totalElements: tmData.page?.totalElements || events.length };
+        tmCache[cacheKey] = result;
+        tmCacheTs[cacheKey] = Date.now();
+        // Trim cache to 50 entries
+        const tmKeys = Object.keys(tmCache);
+        if (tmKeys.length > 50) {
+          const oldest = tmKeys.sort((a, b) => (tmCacheTs[a] || 0) - (tmCacheTs[b] || 0));
+          for (let i = 0; i < tmKeys.length - 50; i++) { delete tmCache[oldest[i]]; delete tmCacheTs[oldest[i]]; }
+        }
+        return res.json(result);
       }
 
       // ── Health check ─────────────────────────────────────────────

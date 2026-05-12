@@ -174,7 +174,12 @@ async function handleRouteDetail(res, routeId, agency) {
   // For each pattern, compute direction info in parallel
   const patternData = await Promise.all(patterns.map(async (pattern) => {
     const headsign = pattern.headsign || pattern.desc || pattern.name || `Route ${bareId}`;
-    const stops = (pattern.stops || []).map(s => String(s.id || '').split(':').pop());
+    const stops = (pattern.stops || []).map(s => ({
+      stop_id: String(s.id || '').split(':').pop(),
+      stop_name: s.name || '',
+      stop_lat: typeof s.lat === 'number' ? s.lat : null,
+      stop_lon: typeof s.lon === 'number' ? s.lon : null,
+    }));
     const trips = Array.isArray(pattern.trips) ? pattern.trips : [];
     const tripCount = trips.length;
 

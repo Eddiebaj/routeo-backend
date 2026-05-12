@@ -34,6 +34,22 @@ async function loadStops() {
   return map;
 }
 
+function computeBearing(lat1, lng1, lat2, lng2) {
+  const toRad = d => d * Math.PI / 180;
+  const dLng = toRad(lng2 - lng1);
+  const y = Math.sin(dLng) * Math.cos(toRad(lat2));
+  const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2))
+          - Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLng);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
+function avgCrowdingToOccupancy(avg) {
+  if (avg == null) return null;
+  if (avg <= 2) return 'low';
+  if (avg <= 3.5) return 'moderate';
+  return 'high';
+}
+
 function getTime(stu) {
   const arr = stu.Arrival;
   const dep = stu.Departure;
@@ -67,6 +83,10 @@ async function fetchStoVehicles() {
 
       if (lat == null || lng == null || isNaN(lat) || isNaN(lng)) continue;
 
+      const stoBearing = (vp.position.bearing != null && vp.position.bearing >= 0)
+        ? Math.round(vp.position.bearing)
+        : null;
+
       vehicles.push({
         id: `STO-${tripId || entity.id}`,
         routeId,
@@ -76,6 +96,11 @@ async function fetchStoVehicles() {
         toStop: '',
         progress: 0,
         agency: 'STO',
+        bearing: stoBearing,
+        toStopLat: null,
+        toStopLng: null,
+        secsToNextStop: null,
+        occupancy: null,
       });
     }
     return vehicles;
@@ -150,6 +175,11 @@ async function fetchOcVehicles(stopsMap, now, isDebug) {
       toStop,
       progress: Math.round(progress * 100),
       agency: 'OC_TRANSPO',
+      bearing: Math.round(computeBearing(from.lat, from.lng, to.lat, to.lng)),
+      toStopLat: to.lat,
+      toStopLng: to.lng,
+      secsToNextStop: Math.max(0, toTime - now),
+      occupancy: null,
     });
   }
 
@@ -192,6 +222,31 @@ module.exports = async (req, res) => {
       const wanted = new Set(routesParam.split(',').map(r => r.trim()));
       allVehicles = allVehicles.filter(v => wanted.has(v.routeId));
     }
+
+    // Attach occupancy from crowding_averages (batch, best-effort)
+    try {
+      const nowDate = new Date();
+      const dow = nowDate.getDay(); // 0=Sun
+      const hour = nowDate.getHours();
+      const uniqueRoutes = [...new Set(allVehicles.map(v => v.routeId))];
+      if (uniqueRoutes.length > 0) {
+        const { data: crowdRows } = await supabase
+          .from('crowding_averages')
+          .select('route_id, avg_crowding')
+          .in('route_id', uniqueRoutes)
+          .eq('day_of_week', dow)
+          .eq('hour_of_day', hour);
+        if (crowdRows && crowdRows.length > 0) {
+          const crowdMap = {};
+          for (const row of crowdRows) crowdMap[row.route_id] = row.avg_crowding;
+          for (const v of allVehicles) {
+            if (v.occupancy === null && crowdMap[v.routeId] != null) {
+              v.occupancy = avgCrowdingToOccupancy(crowdMap[v.routeId]);
+            }
+          }
+        }
+      }
+    } catch { /* crowding is best-effort, never block vehicles response */ }
 
     const resp = {
       vehicles: allVehicles,
